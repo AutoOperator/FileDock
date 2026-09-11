@@ -1,0 +1,527 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>FileDock</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body class="theme-default-day">
+  <!-- 主题装饰（猫耳/冰棍手柄等）- 在 #app 外部，可突出窗口边界 -->
+  <div id="theme-deco-top">
+    <!-- 猫耳主题：左耳（尖三角，根部水平贴标题栏，外八撇） -->
+    <svg class="cat-ear cat-ear-left" width="48" height="46" viewBox="0 0 48 46">
+      <path class="deco-fill" d="M2,46 L8,2 L40,46 Z"/>
+      <path class="deco-accent" d="M10,46 L13,14 L32,46 Z"/>
+    </svg>
+    <!-- 猫耳主题：右耳（尖三角，根部水平贴标题栏，外八撇） -->
+    <svg class="cat-ear cat-ear-right" width="48" height="46" viewBox="0 0 48 46">
+      <path class="deco-fill" d="M46,46 L40,2 L8,46 Z"/>
+      <path class="deco-accent" d="M38,46 L35,14 L16,46 Z"/>
+    </svg>
+  </div>
+  <!-- 玻璃窗主题：顶部折射光泽栏 + 边缘折射光（直接放在 body 层，叠加在 #app 玻璃上方，避免被 #theme-deco-top 的 z-index 困住） -->
+  <svg class="glass-frame" width="100%" height="100%" viewBox="0 0 100 100" preserveAspectRatio="none">
+    <!-- 顶部折射光泽带（折射率与中间玻璃不同，更亮更毛玻璃） -->
+    <rect class="glass-frost-top" x="0" y="0" width="100" height="9"/>
+    <!-- 左侧折射光 -->
+    <rect class="glass-refract-left" x="0" y="0" width="1.8" height="100"/>
+    <!-- 右侧折射光 -->
+    <rect class="glass-refract-right" x="98.2" y="0" width="1.8" height="100"/>
+    <!-- 顶部斜光斑（阳光折射高光） -->
+    <polygon class="glass-glare" points="0,0 32,0 14,9 0,9"/>
+  </svg>
+  <div id="app">
+    <!-- 标题栏 -->
+    <div id="titlebar">
+      <!-- 文件仓名（最左） -->
+      <div class="titlebar-preset">
+        <span id="preset-name">FileDock</span>
+      </div>
+      <!-- 按钮容器（可拖动排序，不含X） -->
+      <div class="titlebar-buttons" id="toolbar-buttons">
+        <!-- 按钮按 toolbarOrder 动态排列，这里放默认顺序的按钮 -->
+        <button class="icon-btn toolbar-btn" data-id="settings" id="settings-btn" title="设置">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M8 4.754a3.246 3.246 0 1 0 0 6.492 3.246 3.246 0 0 0 0-6.492zM5.754 8a2.246 2.246 0 1 1 4.492 0 2.246 2.246 0 0 1-4.492 0z"/>
+            <path d="M9.796 1.343c-.527-1.79-3.065-1.79-3.592 0l-.094.319a.873.873 0 0 1-1.255.52l-.292-.16c-1.64-.892-3.433.902-2.54 2.541l.159.292a.873.873 0 0 1-.52 1.255l-.319.094c-1.79.527-1.79 3.065 0 3.592l.319.094a.873.873 0 0 1 .52 1.255l-.16.292c-.892 1.64.901 3.434 2.541 2.54l.292-.159a.873.873 0 0 1 1.255.52l.094.319c.527 1.79 3.065 1.79 3.592 0l.094-.319a.873.873 0 0 1 1.255-.52l.292.16c1.64.893 3.434-.902 2.54-2.541l-.159-.292a.873.873 0 0 1 .52-1.255l.319-.094c1.79-.527 1.79-3.065 0-3.592l-.319-.094a.873.873 0 0 1-.52-1.255l.16-.292c.893-1.64-.902-3.433-2.541-2.54l-.292.159a.873.873 0 0 1-1.255-.52l-.094-.319zm-2.633.283c.246-.835 1.428-.835 1.674 0l.094.319a1.873 1.873 0 0 0 2.693 1.115l.291-.16c.764-.415 1.6.42 1.184 1.185l-.159.292a1.873 1.873 0 0 0 1.116 2.692l.318.094c.835.246.835 1.428 0 1.674l-.319.094a1.873 1.873 0 0 0-1.115 2.693l.16.291c.415.764-.42 1.6-1.185 1.184l-.291-.159a1.873 1.873 0 0 0-2.693 1.116l-.094.318c-.246.835-1.428.835-1.674 0l-.094-.319a1.873 1.873 0 0 0-2.692-1.115l-.292.16c-.764.415-1.6-.42-1.184-1.185l.159-.291A1.873 1.873 0 0 0 1.945 8.93l-.319-.094c-.835-.246-.835-1.428 0-1.674l.319-.094A1.873 1.873 0 0 0 3.06 4.377l-.16-.292c-.415-.764.42-1.6 1.185-1.184l.292.159a1.873 1.873 0 0 0 2.692-1.115l.094-.319z"/>
+          </svg>
+        </button>
+        <button class="icon-btn toolbar-btn" data-id="view" id="view-toggle-btn" title="切换视图">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+            <rect x="1" y="2" width="14" height="2" rx="1"/>
+            <rect x="1" y="7" width="14" height="2" rx="1"/>
+            <rect x="1" y="12" width="14" height="2" rx="1"/>
+          </svg>
+        </button>
+        <button class="icon-btn toolbar-btn" data-id="filter" id="filter-btn" title="筛选">
+        </button>
+        <button class="icon-btn toolbar-btn" data-id="sort" id="sort-btn" title="排序">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M3.5 2a.5.5 0 0 0-.5.5v10.793L1.354 11.146a.5.5 0 1 0-.708.708l2 2a.5.5 0 0 0 .708 0l2-2a.5.5 0 0 0-.708-.708L3.5 13.293V2.5a.5.5 0 0 0-.5-.5z"/>
+            <path d="M7 3h8a.5.5 0 0 1 0 1H7a.5.5 0 0 1 0-1zm0 3h6a.5.5 0 0 1 0 1H7a.5.5 0 0 1 0-1zm0 3h4a.5.5 0 0 1 0 1H7a.5.5 0 0 1 0-1zm0 3h2a.5.5 0 0 1 0 1H7a.5.5 0 0 1 0-1z"/>
+          </svg>
+        </button>
+        <button class="icon-btn toolbar-btn" data-id="edit" id="edit-btn" title="编辑">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M12.146.146a.5.5 0 0 1 .708 0l3 3a.5.5 0 0 1 0 .708l-10 10a.5.5 0 0 1-.168.11l-5 2a.5.5 0 0 1-.65-.65l2-5a.5.5 0 0 1 .11-.168l10-10zM11.207 2.5L13.5 4.793L14.793 3.5L12.5 1.207L11.207 2.5zm1.586 3L10.5 3.207L4 9.707V10h.5a.5.5 0 0 1 .5.5v.5h.5a.5.5 0 0 1 .5.5v.5h.293l6.5-6.5zm-9.769 7.414l-.013.027-.333.667l1.107 1.107l.667-.333l.027-.013l-.013.013L3.5 13.5l.013-.013L3.024 13.914z"/>
+          </svg>
+        </button>
+        <button class="icon-btn toolbar-btn" data-id="pin" id="pin-btn" title="固定窗口">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M9.828 0.172a.586.586 0 0 0-.828 0L6.586 2.586a.586.586 0 0 0 0 .828L7 4 3.5 7.5l-.5-.5a.586.586 0 0 0-.828 0L.172 9a.586.586 0 0 0 0 .828L2 11.657V14a1 1 0 0 0 1 1h2.343L7.172 16.828a.586.586 0 0 0 .828 0L10 14.828a.586.586 0 0 0 0-.828l-.5-.5L14 10l.586.586a.586.586 0 0 0 .828 0L17.828 8a.586.586 0 0 0 0-.828L15.828 5.172a.586.586 0 0 0-.828 0L14.5 5.5 11 2l.586-.586a.586.586 0 0 0 0-.828L9.828 0.172z" transform="scale(0.8) translate(0, 0)"/>
+          </svg>
+        </button>
+        <button class="icon-btn toolbar-btn hidden" data-id="hide" id="hide-btn" title="快速隐藏">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M8 2a6 6 0 1 0 0 12A6 6 0 0 0 8 2zm0 1a5 5 0 1 1 0 10A5 5 0 0 1 8 3z"/>
+            <path d="M5.5 5.5a.5.5 0 0 1 .5.5v4a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5zm5 0a.5.5 0 0 1 .5.5v4a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5z"/>
+          </svg>
+        </button>
+      </div>
+      <!-- 最小化按钮（固定右上角，不参与排序，位于关闭按钮左侧） -->
+      <button class="icon-btn toolbar-btn close-fixed" data-id="minimize" id="minimize-btn" title="最小化">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+          <rect x="3" y="7" width="10" height="2" rx="1"/>
+        </svg>
+      </button>
+      <!-- 关闭按钮（固定右上角，不参与排序） -->
+      <button class="icon-btn toolbar-btn close-fixed" data-id="close" id="close-btn" title="关闭">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+          <path d="M4.646 4.646a.5.5 0 0 1 .708 0L8 7.293l2.646-2.647a.5.5 0 0 1 .708.708L8.707 8l2.647 2.646a.5.5 0 0 1-.708.708L8 8.707l-2.646 2.647a.5.5 0 0 1-.708-.708L7.293 8 4.646 5.354a.5.5 0 0 1 0-.708z"/>
+        </svg>
+      </button>
+    </div>
+
+    <!-- 面包屑栏（文件夹导航时显示） -->
+    <div id="breadcrumb-bar" class="hidden">
+      <button class="icon-btn" id="folder-back-btn" title="返回上一级">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+          <path d="M12 8a.5.5 0 0 1-.5.5H5.707l2.147 2.146a.5.5 0 0 1-.708.708l-3-3a.5.5 0 0 1 0-.708l3-3a.5.5 0 1 1 .708.708L5.707 7.5H11.5a.5.5 0 0 1 .5.5z"/>
+        </svg>
+      </button>
+      <div id="breadcrumb-path"></div>
+    </div>
+
+    <!-- 文件区域 -->
+    <div id="file-area" class="view-list">
+      <div id="file-list" class="file-container">
+        <!-- 文件项动态生成 -->
+      </div>
+      <div id="empty-state" class="empty-state">
+        <div class="empty-icon" id="empty-icon"></div>
+        <p class="empty-text" id="empty-text">拖入文件到这里</p>
+      </div>
+    </div>
+
+    <!-- 剪贴板仓区域（仅 clipboard 类型仓显示） -->
+    <div id="clip-area">
+      <div class="clip-toolbar">
+        <div class="clip-seg" id="clip-seg">
+          <button data-mode="all" class="active" title="自动收集的历史剪贴板">全部</button>
+          <button data-mode="fav" title="只看你手动收藏/置顶的">收藏</button>
+        </div>
+        <span class="clip-count" id="clip-count"></span>
+        <span class="clip-spacer"></span>
+        <button id="clip-pause" title="暂停自动采集（隐私）">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M5 3h2v10H5zM9 3h2v10H9z"/></svg>
+        </button>
+        <button id="clip-clear" title="清空剪贴板库">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M5.5 5.5A.5.5 0 0 1 6 6v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5zm2.5 0a.5.5 0 0 1 .5.5v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5zm3 .5a.5.5 0 0 0-1 0v6a.5.5 0 0 0 1 0V6z"/><path d="M14.5 3a1 1 0 0 1-1 1H13v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V4h-.5a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1H6a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1h3.5a1 1 0 0 1 1 1v1zM4.118 4L4 4.059V13a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1V4.059L11.882 4H4.118zM2.5 3h11V2h-11v1z"/></svg>
+        </button>
+      </div>
+      <div id="clip-list" class="clip-container"></div>
+      <div id="clip-empty" class="clip-empty">
+        复制内容后自动出现在这里
+        <span>左键点开卡片 → 复制 → 到目标 Ctrl+V；图片可拖出；星号键收藏当前剪贴板</span>
+      </div>
+      <div id="clip-toast" class="clip-toast hidden"></div>
+    </div>
+
+    <!-- 底部状态栏 -->
+    <div id="statusbar">
+      <!-- 模式：安全/修改（带对应图标） -->
+      <button class="icon-btn mode-btn" id="mode-btn" title="切换文件夹操作模式">
+        <span class="mode-icon" id="mode-icon"></span>
+        <span id="mode-label">安全</span>
+      </button>
+      <!-- 当前文件仓类型：引用/临时 -->
+      <span class="dock-type-indicator" id="dock-type-indicator" title="当前文件仓类型">
+        <span class="dock-type-icon" id="dock-type-icon"></span>
+        <span id="dock-type-label">临时</span>
+      </span>
+      <!-- 文件仓序号栏：圆形序号，当前变色，过多隐藏并滚动 -->
+      <div class="dock-pager" id="dock-pager"></div>
+      <div class="statusbar-right">
+        <button class="icon-btn small" id="add-preset-btn" title="文件仓管理">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M2 4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V4zm2-1a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V4a1 1 0 0 0-1-1H4z"/>
+            <path d="M8 5a.5.5 0 0 1 .5.5v2h2a.5.5 0 0 1 0 1h-2v2a.5.5 0 0 1-1 0v-2h-2a.5.5 0 0 1 0-1h2v-2A.5.5 0 0 1 8 5z"/>
+          </svg>
+        </button>
+        <span id="file-count">0 个文件</span>
+      </div>
+    </div>
+
+    <!-- 编辑模式操作栏 -->
+    <div id="edit-bar" class="edit-bar hidden">
+      <button class="edit-action-btn" id="edit-select-all" title="全选">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+          <path d="M14 1a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1h12zM2 0a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V2a2 2 0 0 0-2-2H2z"/>
+          <path d="M5.5 8.5a.5.5 0 0 1 .5.5v3a.5.5 0 0 1-1 0V9a.5.5 0 0 1 .5-.5zm3-2a.5.5 0 0 1 .5.5v5a.5.5 0 0 1-1 0V7a.5.5 0 0 1 .5-.5zm3 1a.5.5 0 0 1 .5.5v4a.5.5 0 0 1-1 0V8a.5.5 0 0 1 .5-.5z"/>
+        </svg>
+        <span>全选</span>
+      </button>
+      <button class="edit-action-btn" id="edit-move-out" title="全不选">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="square">
+          <rect x="2" y="2" width="12" height="12" rx="1"/>
+          <path d="M5 5 L11 11 M11 5 L5 11"/>
+        </svg>
+        <span>全不选</span>
+      </button>
+      <button class="edit-action-btn" id="edit-remove" title="从列表移除">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+          <path d="M5.5 5.5A.5.5 0 0 1 6 6v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5zm2.5 0a.5.5 0 0 1 .5.5v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5zm3 .5a.5.5 0 0 0-1 0v6a.5.5 0 0 0 1 0V6z"/>
+          <path d="M14.5 3a1 1 0 0 1-1 1H13v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V4h-.5a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1H6a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1h3.5a1 1 0 0 1 1 1v1zM4.118 4L4 4.059V13a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1V4.059L11.882 4H4.118zM2.5 3h11V2h-11v1z"/>
+        </svg>
+        <span>移除</span>
+      </button>
+      <button class="edit-action-btn danger delete-btn hidden" id="edit-delete" title="从磁盘删除">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+          <path d="M5.5 5.5A.5.5 0 0 1 6 6v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5zm2.5 0a.5.5 0 0 1 .5.5v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5zm3 .5a.5.5 0 0 0-1 0v6a.5.5 0 0 0 1 0V6z"/>
+          <path d="M14.5 3a1 1 0 0 1-1 1H13v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V4h-.5a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1H6a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1h3.5a1 1 0 0 1 1 1v1zM4.118 4L4 4.059V13a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1V4.059L11.882 4H4.118zM2.5 3h11V2h-11v1z"/>
+        </svg>
+        <span>从磁盘删除</span>
+      </button>
+      <button class="edit-action-btn primary" id="edit-done" title="完成">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+          <path d="M13.854 3.646a.5.5 0 0 1 0 .708l-7 7a.5.5 0 0 1-.708 0l-3.5-3.5a.5.5 0 1 1 .708-.708L6.5 10.293l6.646-6.647a.5.5 0 0 1 .708 0z"/>
+        </svg>
+        <span>完成</span>
+      </button>
+    </div>
+
+    <!-- 排序菜单 -->
+    <div id="sort-menu" class="context-menu hidden">
+      <div class="menu-item sort-item" data-sort="asc">顺序</div>
+      <div class="menu-item sort-item" data-sort="desc">逆序</div>
+      <div class="menu-separator"></div>
+      <div class="menu-item sort-item" data-sortby="name">名称</div>
+      <div class="menu-item sort-item" data-sortby="time">时间</div>
+      <div class="menu-item sort-item" data-sortby="size">大小</div>
+    </div>
+
+    <!-- 筛选面板 -->
+    <div id="filter-panel" class="filter-panel hidden">
+      <div class="filter-header">
+        <button class="filter-mode-btn active" data-filtermode="type">按类型</button>
+        <button class="filter-mode-btn" data-filtermode="ext">按后缀名</button>
+      </div>
+      <div class="filter-body" id="filter-body"></div>
+    </div>
+
+    <!-- 剪贴板卡片右键菜单 -->
+    <div id="clip-menu" class="context-menu hidden"></div>
+
+    <!-- 右键菜单 -->
+    <div id="context-menu" class="context-menu hidden">
+      <div class="menu-item" data-action="open">打开</div>
+      <div class="menu-item" data-action="openFolder">在文件夹中显示</div>
+      <div class="menu-item rename-menu-item hidden" data-action="rename">重命名</div>
+      <div class="menu-separator"></div>
+      <div class="menu-item" data-action="remove">从列表移除</div>
+      <div class="menu-item danger delete-menu-item hidden" data-action="delete">⚠ 从磁盘删除</div>
+    </div>
+
+    <!-- 空白处右键菜单 -->
+    <div id="empty-context-menu" class="context-menu hidden">
+      <div class="menu-item" data-action="newFolder">新建文件夹</div>
+      <div class="menu-item" data-action="newTextFile">新建文本文件</div>
+      <div class="menu-item" data-action="newMarkdown">新建 Markdown 文档</div>
+      <div class="menu-separator"></div>
+      <div class="menu-item" data-action="refresh">刷新当前内容</div>
+      <div class="menu-item" data-action="openInExplorer">在资源管理器中打开</div>
+    </div>
+
+    <!-- 设置面板 -->
+    <div id="settings-panel" class="panel hidden">
+      <div class="panel-header">
+        <button class="icon-btn panel-back-btn" id="back-settings" title="返回">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M12 8a.5.5 0 0 1-.5.5H5.707l2.147 2.146a.5.5 0 0 1-.708.708l-3-3a.5.5 0 0 1 0-.708l3-3a.5.5 0 1 1 .708.708L5.707 7.5H11.5a.5.5 0 0 1 .5.5z"/>
+          </svg>
+        </button>
+        <h2>设置</h2>
+      </div>
+      <div class="panel-body">
+        <!-- 使用说明 -->
+        <div class="settings-section guide-section">
+          <div class="guide-header" id="guide-header">
+            <span class="guide-title">使用说明</span>
+            <svg class="guide-arrow" width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+              <path d="M8 12a.5.5 0 0 1-.354-.146l-5-5a.5.5 0 0 1 .708-.708L8 10.793l4.646-4.647a.5.5 0 0 1 .708.708l-5 5A.5.5 0 0 1 8 12z"/>
+            </svg>
+          </div>
+          <div class="guide-content hidden" id="guide-content">
+            <div class="guide-item">
+              <h4>基本操作</h4>
+              <ul>
+                <li>将文件拖入悬浮窗 → 常驻显示，随时取用</li>
+                <li>单击文件 → 打开文件</li>
+                <li>右键文件 → 打开 / 在文件夹中显示 / 移除 / 删除</li>
+                <li>将文件拖出窗口 → 从列表中移出</li>
+              </ul>
+            </div>
+            <div class="guide-item">
+              <h4>边缘吸附与隐藏</h4>
+              <ul>
+                <li>将窗口拖到屏幕边缘 → 自动吸附并隐藏为小圆点（触点）</li>
+                <li>鼠标移到触点上 → 自动展开窗口（悬停模式）</li>
+                <li>点击触点 → 展开窗口（点击模式）</li>
+                <li>拖拽文件靠近触点 → 自动展开（可直接拖入）</li>
+                <li>固定窗口（图钉按钮）→ 暂停自动隐藏</li>
+              </ul>
+            </div>
+            <div class="guide-item">
+              <h4>编辑模式与多选</h4>
+              <ul>
+                <li>点击编辑按钮 → 进入编辑模式</li>
+                <li>按住空白处拖动 → 框选多个文件</li>
+                <li>随手单击空白 → 不会误触框选</li>
+                <li>双击空白处 → 快速退出编辑模式</li>
+                <li>全选 / 移出 / 删除 批量操作</li>
+              </ul>
+            </div>
+            <div class="guide-item">
+              <h4>文件夹浏览</h4>
+              <ul>
+                <li>双击文件夹 → 进入查看内容</li>
+                <li>顶部面包屑 → 点击任意层级快速返回</li>
+                <li><b>安全模式</b>：拖入的文件仅临时显示，不修改真实文件</li>
+                <li><b>修改模式</b>：拖入/拖出/删除会真实修改文件夹（请谨慎）</li>
+              </ul>
+            </div>
+            <div class="guide-item">
+              <h4>文件仓管理</h4>
+              <ul>
+                <li>托盘菜单 → 新建文件仓 / 文件仓管理</li>
+                <li>临时仓：仅存文件引用，拖出后引用从仓中消失，不影响真实文件</li>
+                <li>引用仓：绑定真实文件夹，仓内内容为文件夹的实时引用</li>
+                <li>底部状态栏 ← / → 键 → 在各文件仓间切换；点击序号圆点跳转</li>
+                <li>左下角 + 按钮 → 快速打开文件仓管理</li>
+              </ul>
+            </div>
+            <div class="guide-item">
+              <h4>隐藏技巧</h4>
+              <ul>
+                <li><b>顶部按钮长按拖动</b> → 自定义按钮顺序</li>
+                <li>窗口太窄时 → 按钮自动收到"更多"菜单</li>
+                <li>设置里滑块数值 → 双击可直接输入数字</li>
+                <li>主题默认强调色 → 强调色设置里点"主题默认"恢复</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+
+        <!-- 主题 -->
+        <div class="settings-section">
+          <label class="section-title">主题</label>
+          <div class="setting-row">
+            <span>主题风格</span>
+            <select id="setting-theme">
+              <option value="default">默认</option>
+              <option value="cat">猫耳</option>
+              <option value="popsicle">冰棍</option>
+              <option value="glass">玻璃窗</option>
+            </select>
+          </div>
+          <div class="setting-row">
+            <span>日间/夜间</span>
+            <select id="setting-themeMode">
+              <option value="day">日间</option>
+              <option value="night">夜间</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- 窗口颜色 -->
+        <div class="settings-section">
+          <label class="section-title">窗口颜色</label>
+          <div class="setting-row">
+            <span>强调色</span>
+            <input type="color" id="setting-accentColor" value="#2563eb">
+            <button class="text-btn" id="reset-accentColor">主题默认</button>
+          </div>
+          <div class="setting-tip">留空使用主题默认强调色。选择颜色后所有主题都会跟随该强调色。</div>
+        </div>
+
+        <!-- 文件夹操作模式 -->
+        <div class="settings-section">
+          <label class="section-title">文件夹操作模式</label>
+          <div class="setting-row">
+            <select id="setting-folderMode">
+              <option value="safe">安全模式（不影响真实文件）</option>
+              <option value="modify">修改模式（影响真实文件）</option>
+            </select>
+          </div>
+          <div class="setting-tip">
+            安全模式：引用仓与文件夹浏览内操作不影响真实文件，移入的文件仅临时显示，移出后文件不减少；删除会有提示。<br>
+            修改模式：引用仓与文件夹内拖入/拖出/删除将真实修改文件夹内容，删除走回收站（可恢复），首次切换会警告。
+          </div>
+        </div>
+
+        <!-- 临时仓拖出行为 -->
+        <div class="settings-section">
+          <label class="section-title">临时仓拖出</label>
+          <div class="setting-row">
+            <span>从临时仓拖出文件时，从仓中移除引用</span>
+            <input type="checkbox" id="setting-removeOnDragOutFromTemp">
+          </div>
+          <div class="setting-tip">
+            勾选：拖出后引用从仓中消失（默认）。<br>
+            取消勾选：拖出后引用仍保留在仓中（仅复制到目标位置）。
+          </div>
+        </div>
+
+        <!-- 吸附设置 -->
+        <div class="settings-section">
+          <label class="section-title">边缘吸附</label>
+          <div class="setting-row">
+            <span>启用吸附</span>
+            <input type="checkbox" id="setting-snapEnabled">
+          </div>
+          <div class="setting-row">
+            <span>吸附后自动隐藏</span>
+            <input type="checkbox" id="setting-autoHideOnSnap">
+          </div>
+          <div class="setting-row">
+            <span>触点大小</span>
+            <select id="setting-triggerSize">
+              <option value="small">小</option>
+              <option value="medium">中</option>
+              <option value="large">大</option>
+            </select>
+          </div>
+          <div class="setting-row">
+            <span>触点颜色</span>
+            <input type="color" id="setting-triggerColor" value="#2563eb">
+            <button class="text-btn" id="reset-triggerColor">主题默认</button>
+          </div>
+          <div class="setting-row">
+            <span>恢复方式</span>
+            <select id="setting-triggerAction">
+              <option value="hover">鼠标触碰</option>
+              <option value="click">鼠标点击</option>
+            </select>
+          </div>
+          <div class="setting-row">
+            <span>自动隐藏延迟</span>
+            <input type="range" id="setting-hideDelay" min="0" max="3000" step="100" value="1500">
+            <span class="slider-value" id="hideDelay-value">1.5秒</span>
+          </div>
+        </div>
+
+        <!-- 应用图标 -->
+        <div class="settings-section">
+          <label class="section-title">应用图标</label>
+          <div class="icon-picker" id="icon-picker">
+            <!-- 图标缩略图动态生成 -->
+          </div>
+          <div class="setting-row" style="margin-top:8px;">
+            <button class="btn-primary" id="upload-icon-btn">上传自定义图标</button>
+            <input type="file" id="icon-file-input" accept="image/png,image/jpeg,image/svg+xml" hidden>
+          </div>
+          <div class="setting-tip">支持 PNG/JPG/SVG，建议正方形。仅影响任务栏和托盘图标（exe 文件图标保持默认）。</div>
+        </div>
+
+        <!-- 窗口行为 -->
+        <div class="settings-section">
+          <label class="section-title">窗口行为</label>
+          <div class="setting-row">
+            <span>窗口置顶</span>
+            <input type="checkbox" id="setting-alwaysOnTop">
+          </div>
+          <div class="setting-row">
+            <span>关闭时最小化到托盘</span>
+            <input type="checkbox" id="setting-closeToTray">
+          </div>
+        </div>
+
+        <!-- 启动行为 -->
+        <div class="settings-section">
+          <label class="section-title">启动</label>
+          <div class="setting-row">
+            <span>启动时加载</span>
+            <select id="setting-startupPreset">
+              <option value="last">上次使用的文件仓</option>
+              <option value="new">新建空白文件仓</option>
+            </select>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 文件仓管理面板 -->
+    <div id="preset-panel" class="panel hidden">
+      <div class="panel-header">
+        <button class="icon-btn panel-back-btn" id="back-preset" title="返回">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M12 8a.5.5 0 0 1-.5.5H5.707l2.147 2.146a.5.5 0 0 1-.708.708l-3-3a.5.5 0 0 1 0-.708l3-3a.5.5 0 1 1 .708.708L5.707 7.5H11.5a.5.5 0 0 1 .5.5z"/>
+          </svg>
+        </button>
+        <h2>文件仓管理</h2>
+      </div>
+      <div class="panel-body">
+        <div class="settings-section">
+          <label class="section-title">新建文件仓</label>
+          <div class="setting-row">
+            <span>类型</span>
+            <select id="new-dock-type">
+              <option value="temporary">临时仓（仅存引用，拖出即消失）</option>
+              <option value="reference">引用仓（绑定真实文件夹）</option>
+              <option value="clipboard">剪贴板仓（文本/图片/混排）</option>
+            </select>
+          </div>
+          <div class="setting-row">
+            <span>名称</span>
+            <input type="text" id="new-preset-name" placeholder="文件仓名称">
+          </div>
+          <div class="setting-row" id="new-dock-path-row">
+            <span>文件夹路径</span>
+            <input type="text" id="new-dock-path" placeholder="输入或浏览选择文件夹路径">
+            <button class="text-btn" id="browse-dock-path" type="button">浏览</button>
+          </div>
+          <div class="dock-drop-zone" id="dock-drop-zone">直接拖入文件夹到此获取路径</div>
+          <div class="setting-tip" id="new-dock-path-tip">引用仓将绑定该文件夹，仓内内容为文件夹的实时引用。路径为空时将创建一个空文件夹。</div>
+          <div class="setting-row" style="margin-top:8px;">
+            <button class="btn-primary" id="create-preset-btn">新建</button>
+            <button class="text-btn" id="clear-dock-form" type="button">清空</button>
+          </div>
+        </div>
+        <div class="settings-section">
+          <label class="section-title">已有文件仓</label>
+          <div id="preset-list-container">
+            <!-- 文件仓列表动态生成 -->
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <!-- 主题底部装饰（冰棍手柄/融化等）- 在 #app 外部 -->
+  <div id="theme-deco-bottom">
+    <!-- 冰棍主题：融化波浪边缘 -->
+    <svg class="melt-wave" width="100%" height="14" viewBox="0 0 100 14" preserveAspectRatio="none">
+      <path class="deco-fill" d="M0,0 Q10,14 20,5 Q30,0 40,8 Q50,14 60,4 Q70,0 80,10 Q90,14 100,5 L100,0 L0,0 Z"/>
+    </svg>
+    <!-- 融化液滴 -->
+    <div class="melt-drop" style="left: 22%;"></div>
+    <div class="melt-drop small" style="left: 68%;"></div>
+    <!-- 冰棍柄 -->
+    <div class="popsicle-stick"></div>
+  </div>
+
+  <script src="icons.js"></script>
+  <script src="renderer.js"></script>
+  <script src="clipboard.js"></script>
+</body>
+</html>

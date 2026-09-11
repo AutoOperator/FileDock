@@ -1,0 +1,14 @@
+node_modules/
+dist/
+*.log
+.DS_Store
+Thumbs.db
+.env
+
+# 本地工具产物（dnd-helper 编译输出，发布步骤见 tools/dnd-helper）
+src/dnd-helper/
+tools/dnd-helper/bin/
+tools/dnd-helper/out/
+tools/dnd-helper/obj/
+native-drag/build/
+native-drag/node_modules/

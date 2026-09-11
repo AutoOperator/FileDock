@@ -1,0 +1,62 @@
+{
+  "name": "file-dock",
+  "version": "1.0.1",
+  "description": "贴在屏幕边缘的透明悬浮收纳窗：文件 / 文本 / 图片统一收纳与拖出",
+  "main": "src/main/main.js",
+  "scripts": {
+    "start": "electron . --no-sandbox",
+    "dev": "electron . --dev --no-sandbox",
+    "build": "electron-builder --win portable",
+    "build:dir": "electron-builder --win --dir",
+    "build:green": "electron-builder --win --dir && node build/make-green.js"
+  },
+  "author": "AutoOperator",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AutoOperator/FileDock.git"
+  },
+  "homepage": "https://github.com/AutoOperator/FileDock#readme",
+  "bugs": {
+    "url": "https://github.com/AutoOperator/FileDock/issues"
+  },
+  "devDependencies": {
+    "electron": "31.7.7",
+    "electron-builder": "^25.1.8"
+  },
+  "dependencies": {
+    "electron-store": "^8.2.0"
+  },
+  "build": {
+    "appId": "com.filedock.app",
+    "productName": "FileDock",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "src/**/*",
+      "native-drag/build/Release/*.node",
+      "node_modules/**/*",
+      "package.json"
+    ],
+    "asarUnpack": ["native-drag/**"],
+    "electronDist": "node_modules/electron/dist",
+    "win": {
+      "target": [
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.png",
+      "sign": false,
+      "artifactName": "FileDock-Portable-${version}.exe"
+    },
+    "portable": {
+      "artifactName": "FileDock-Portable-${version}.exe"
+    }
+  }
+}
+

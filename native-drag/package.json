@@ -1,0 +1,13 @@
+{
+  "name": "native-drag",
+  "version": "1.0.0",
+  "private": true,
+  "description": "In-process OLE text drag for FileDock (Electron). Build: npm run build",
+  "scripts": {
+    "build": "node-gyp rebuild --target=31.7.7 --arch=x64 --dist-url=https://electronjs.org/headers"
+  },
+  "gypfile": true,
+  "devDependencies": {
+    "node-gyp": "^11.5.0"
+  }
+}

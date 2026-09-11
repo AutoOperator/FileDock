@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>Trigger</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: transparent;
+    }
+    #trigger-bar {
+      width: 100%;
+      height: 100%;
+      background: #2563eb;
+      border-radius: 3px;
+      cursor: pointer;
+      transition: filter 0.15s;
+    }
+    #trigger-bar:hover {
+      filter: brightness(1.4);
+    }
+  </style>
+</head>
+<body>
+  <div id="trigger-bar"></div>
+  <script>
+    const bar = document.getElementById('trigger-bar');
+
+    // 接收配置（颜色等）
+    window.api.trigger.onConfig((config) => {
+      if (config.color) {
+        bar.style.background = config.color;
+      }
+    });
+
+    // 鼠标进入 - 触发恢复（hover模式）
+    bar.addEventListener('mouseenter', () => {
+      window.api.trigger.mouseEnter();
+    });
+
+    // 鼠标点击 - 触发恢复（click模式）
+    bar.addEventListener('click', () => {
+      window.api.trigger.mouseClick();
+    });
+
+    // 从桌面拖动文件靠近触点时自动展开（hover模式下生效）
+    // dragover 会持续触发，但主进程的 expandFromTrigger 会判断是否已展开
+    let dragNotified = false;
+    bar.addEventListener('dragenter', (e) => {
+      e.preventDefault();
+      if (!dragNotified) {
+        dragNotified = true;
+        window.api.trigger.mouseEnter();
+      }
+    });
+    bar.addEventListener('dragover', (e) => {
+      e.preventDefault();
+    });
+    bar.addEventListener('dragleave', () => {
+      dragNotified = false;
+    });
+    bar.addEventListener('drop', (e) => {
+      e.preventDefault();
+      dragNotified = false;
+    });
+  </script>
+</body>
+</html>
