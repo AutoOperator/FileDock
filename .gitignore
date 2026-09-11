@@ -12,3 +12,6 @@ tools/dnd-helper/out/
 tools/dnd-helper/obj/
 native-drag/build/
 native-drag/node_modules/
+
+# 开发思路与架构文档（不影响源码运行，不进版本控制）
+docs/
