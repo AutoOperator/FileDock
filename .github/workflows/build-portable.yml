@@ -1,89 +1,106 @@
-# GitHub Actions: 自动在 Windows runner 上编译 native 模块 + 打包便携版
-# 用户无需本地装 VS Build Tools / Python，直接在 Actions 页面点 Run workflow
-# 产物作为 artifact 上传，下载后即用
+# GitHub Actions: 在 Windows runner 上编译原生模块并打包 FileDock
+#
+# 你不需要在本地装 VS Build Tools / Python —— 在 Actions 页面点 "Run workflow"
+# 即可得到打包好的产物；推 v* tag 时会自动附到对应的 Release 上。
 name: 打包便携版 (Windows)
 
 on:
-  # 手动触发
+  # 手动触发（默认打包当前分支）
   workflow_dispatch:
     inputs:
       ref:
-        description: '要打包的分支/tag/commit（默认 v2.0）'
+        description: '要打包的分支 / tag / commit（留空 = 触发时的分支）'
         required: false
-        default: 'v2.0'
-  # push 到 v2.0 tag 时自动触发
+        default: ''
+
+  # 推 v* tag 时自动打包并发布到 Release
   push:
     tags:
-      - 'v2.0'
+      - 'v*'
+
+permissions:
+  contents: write
 
 jobs:
   build:
     runs-on: windows-latest
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.inputs.ref || 'v2.0' }}
+          ref: ${{ github.event.inputs.ref || github.ref }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '18'
-          cache: 'npm'
+          node-version: '20'
 
       - name: Setup Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: '3.x'
 
-      - name: Configure npm mirror
-        run: |
-          npm config set registry https://registry.npmmirror.com
-          npm config set electron_mirror https://registry.npmmirror.com/-/binary/electron/
-          npm config set electron_builder_binaries_mirror https://registry.npmmirror.com/-/binary/electron-builder-binaries/
-
       - name: Install dependencies
-        # --ignore-scripts 跳过 electron postinstall（镜像可能失效），下一步单独装二进制
-        run: npm install --ignore-scripts
+        # electron 的 postinstall 会把 Electron 二进制下到 node_modules/electron/dist
+        run: npm install
 
-      - name: Install electron binary
-        # 单独触发 electron 的 install.js，从镜像下载 win32 二进制到 node_modules/electron/dist
-        run: node node_modules/electron/install.js
-        continue-on-error: true
-
-      - name: Build TS
-        run: npm run build:ts
-
-      - name: Build native addon (MSVC)
-        # 关键步骤：用 node-gyp 编译 C++ → pixel_native.node
-        # Windows runner 自带 VS Build Tools + Windows SDK
-        run: npx node-gyp configure build --directory=native --target=28.1.0 --arch=x64 --dist-url=https://registry.npmmirror.com/-/binary/electron/
+      - name: Build native addon (native-drag)
+        # 关键步骤：node-gyp 编译 C++ 原生模块 → native-drag/build/Release/native_drag.node
+        # runner 自带 VS Build Tools + Windows SDK；target 必须与 Electron 版本一致（ABI 对齐）
+        working-directory: native-drag
+        run: npm install && npm run build
         env:
-          # 强制用 MSVC 工具链
           GYP_MSVS_VERSION: 2022
 
       - name: Verify native build
-        # 检查 .node 文件是否生成
-        run: |
-          if (Test-Path "native\build\Release\pixel_native.node") {
-            Write-Host "✓ pixel_native.node 编译成功"
-            Get-Item native\build\Release\pixel_native.node | Format-List
-          } else {
-            Write-Host "✗ pixel_native.node 未生成，打包将以 WebGL fallback 模式发布"
-            dir native\build -Recurse -ErrorAction SilentlyContinue
-          }
         shell: pwsh
+        run: |
+          $p = "native-drag\build\Release\native_drag.node"
+          if (Test-Path $p) {
+            Write-Host "✓ native_drag.node 编译成功"
+            Get-Item $p | Format-List Name, Length, LastWriteTime
+          } else {
+            # 不中断：原生模块是可选增强，缺失时应用会降级运行
+            Write-Host "! native_drag.node 未生成，本次产物将以降级模式发布（剪贴板改为轮询探测）"
+          }
 
-      - name: Pack portable
-        # electron-builder 打包成 dir（便携版，不生成安装器）
-        run: npx electron-builder --win --dir
+      - name: Pack portable exe
+        # 单文件便携版 → dist/FileDock-Portable-<version>.exe
+        run: npm run build
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Upload portable artifact
+      - name: Pack green folder
+        # 绿色文件夹版 → dist/文件仓/（含预建的 config/，数据跟文件夹走）
+        run: npm run build:green
+
+      - name: Zip green folder
+        shell: pwsh
+        run: |
+          $ver = (Get-Content package.json | ConvertFrom-Json).version
+          Compress-Archive -Path "dist\文件仓\*" -DestinationPath "dist\FileDock-Green-$ver.zip" -Force
+
+      - name: Collect artifacts
+        shell: pwsh
+        run: Get-ChildItem dist\*.exe, dist\*.zip | Format-Table Name, Length
+
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: 像素窗口-便携版-v2.0
-          path: 像素窗口-便携版/win-unpacked/
+          name: FileDock-Windows
+          path: |
+            dist/*.exe
+            dist/*.zip
           retention-days: 30
-          compression-level: 0
+
+      - name: Attach to Release
+        # 仅 tag 触发时执行：把产物附到同名 Release（不存在则创建）
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ github.ref_name }}"
+          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --title "$TAG" --generate-notes
+          gh release upload "$TAG" dist/*.exe dist/*.zip --clobber
