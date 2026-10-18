@@ -1,29 +1,28 @@
-// native-drag —— 进程内 OLE 文本拖放加载器
+// native-drag —— 进程内 OLE 原生能力加载器（剪贴板序列号 / 前台窗口 / 贴入 / 文件列表）
 // 原生模块编译后位于 <app根>/native-drag/build/Release/native_drag.node
 const path = require('path');
 const fs = require('fs');
 
 let mod = null;
+let loadFailed = false; // 加载失败或导出不完整时永久记为不可用，避免每次调用都重复尝试
 function nodePath() {
   return path.join(__dirname, '..', '..', 'native-drag', 'build', 'Release', 'native_drag.node');
 }
 function available() {
   if (mod) return true;
+  if (loadFailed) return false;
   try {
     const p = nodePath();
-    if (!fs.existsSync(p)) return false;
-    mod = require(p); // .node 编译目标 = Electron 31.7.7（ABI 匹配）
-    return typeof mod.startDrag === 'function';
+    if (!fs.existsSync(p)) { loadFailed = true; return false; }
+    const m = require(p); // .node 编译目标 = Electron 31.7.7（ABI 匹配）
+    if (typeof m.clipSeq !== 'function') { loadFailed = true; return false; }
+    mod = m;
+    return true;
   } catch (e) {
     console.error('native-drag 加载失败:', e);
+    loadFailed = true;
     return false;
   }
-}
-// 发起进程内文本拖放（阻塞直到拖拽结束）；返回 {ok,down,effect,hr} 或 null
-function dragText(text, html) {
-  if (!available()) return null;
-  try { return mod.startDrag(text || '', html || ''); }
-  catch (e) { console.error('native-drag 调用失败:', e); return null; }
 }
 // 剪贴板序列号 / 前台窗口（供采集与“贴回上一窗口”回退用）
 function seq() {
@@ -33,12 +32,6 @@ function seq() {
 function fg() {
   if (!available()) return 0;
   try { const v = mod.fgHwnd(); return typeof v === 'number' ? v : 0; } catch (e) { return 0; }
-}
-// 回退：写剪贴板并 Ctrl+V 贴进指定窗口（hwnd=number）
-function paste(hwnd, text) {
-  if (!available()) return false;
-  try { return !!mod.paste(hwnd || 0, text || ''); }
-  catch (e) { console.error('native-drag paste 失败:', e); return false; }
 }
 // 拖拽会话辅助：光标状态 / 指定点所在窗口 / 只发 Ctrl+V
 function cursor() {
@@ -58,4 +51,9 @@ function clipFiles() {
   if (!available()) return [];
   try { return mod.clipFiles() || []; } catch (e) { return []; }
 }
-module.exports = { available, dragText, seq, fg, paste, cursor, winAt, sendPaste, clipFiles };
+// 虚拟键按下状态（GetAsyncKeyState，不依赖窗口焦点）：悬浮预览 Ctrl/L 热键轮询用
+function keyDown(vk) {
+  if (!available()) return false;
+  try { return !!mod.keyDown(vk); } catch (e) { return false; }
+}
+module.exports = { available, seq, fg, cursor, winAt, sendPaste, clipFiles, keyDown };

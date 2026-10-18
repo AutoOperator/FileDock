@@ -112,10 +112,20 @@ function snapToEdge(edge) {
 
   const settings = getSettings();
   if (settings.autoHideOnSnap && !isPinned()) {
-    // 延迟隐藏，让用户看到吸附效果
+    // 吸附后延迟检查：此刻鼠标多半还在仓内（刚拖到边缘），用户往往还想继续
+    // 操作——只要光标仍在仓内就不收起；离开后由 mouseleave 的延迟收起接管
     clearHideTimer();
     hideTimer = setTimeout(() => {
-      if (!isPinned()) collapseToTrigger();
+      hideTimer = null;
+      if (isPinned()) return;
+      try {
+        const b = win.getBounds();
+        const pt = screen.getCursorScreenPoint();
+        const inside = pt.x >= b.x && pt.x <= b.x + b.width &&
+                       pt.y >= b.y && pt.y <= b.y + b.height;
+        if (inside) return; // 鼠标还在仓内：不自动隐藏
+      } catch (e) { /* 窗口正在销毁 */ }
+      collapseToTrigger();
     }, 500);
   }
 

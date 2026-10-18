@@ -35,6 +35,10 @@ const state = {
   isSnapped: false,
   // 框选状态
   boxSelecting: false,
+  // 编辑模式搜索
+  searchQuery: '',        // 关键词（空 = 未搜索）
+  searchRecursive: false, // false=仅当前目录级 true=含所有子目录
+  searchResults: null,    // 递归搜索结果（null=尚未搜索/搜索中）
 };
 
 // 当前文件仓是否为引用仓
@@ -64,6 +68,30 @@ const THEME_DECO_PADDING = {
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => document.querySelectorAll(sel);
 
+// HTML 转义：文件名、文件夹名、文件仓名来自磁盘或用户输入，直接拼进 innerHTML 时
+// 其中的 < > " 会被当作标签/属性边界解析（文件名里一个引号就能截断属性）。
+// 所有插入 innerHTML 的用户数据都要先过这里。
+function escHtml(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  }[c]));
+}
+
+// 本地文件 → file:// URL（缩略图/预览直接引用原文件用）
+function fileUrlOf(p) {
+  return 'file:///' + encodeURI(String(p).replace(/\\/g, '/')).replace(/#/g, '%23').replace(/\?/g, '%3F');
+}
+
+// 弹层定位后按实际尺寸钳回窗口内，避免超出窗口边界被裁掉
+function clampPopup(el, x, y) {
+  el.style.left = `${x}px`;
+  el.style.top = `${y}px`;
+  const w = el.offsetWidth || 0;
+  const h = el.offsetHeight || 0;
+  el.style.left = `${Math.max(4, Math.min(x, window.innerWidth - w - 4))}px`;
+  el.style.top = `${Math.max(4, Math.min(y, window.innerHeight - h - 4))}px`;
+}
+
 const els = {
   app: $('#app'),
   titlebar: $('#titlebar'),
@@ -76,6 +104,7 @@ const els = {
   filterBtn: $('#filter-btn'),
   filterPanel: $('#filter-panel'),
   filterBody: $('#filter-body'),
+  filterToggleAll: $('#filter-toggle-all'),
   editBtn: $('#edit-btn'),
   pinBtn: $('#pin-btn'),
   settingsBtn: $('#settings-btn'),
@@ -96,6 +125,9 @@ const els = {
   breadcrumbBar: $('#breadcrumb-bar'),
   breadcrumbPath: $('#breadcrumb-path'),
   folderBackBtn: $('#folder-back-btn'),
+  searchBar: $('#search-bar'),
+  searchInput: $('#search-input'),
+  searchScopeBtn: $('#search-scope-btn'),
   modeBtn: $('#mode-btn'),
   modeLabel: $('#mode-label'),
   modeIcon: $('#mode-icon'),
@@ -107,26 +139,14 @@ const els = {
   emptyText: $('#empty-text'),
 };
 
-// ===== 文件类型图标 =====
-const FILE_ICONS = {
-  folder: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M10 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/></svg>`,
-  image: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"/></svg>`,
-  video: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M17 10.5V7c0-.55-.45-1-1-1H4c-.55 0-1 .45-1 1v10c0 .55.45 1 1 1h12c.55 0 1-.45 1-1v-3.5l4 4v-11l-4 4z"/></svg>`,
-  audio: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/></svg>`,
-  document: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z"/></svg>`,
-  archive: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M20.54 5.23l-1.39-1.68C18.88 3.21 18.47 3 18 3H6c-.47 0-.88.21-1.16.55L3.46 5.23C3.17 5.57 3 6.02 3 6.5V19c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V6.5c0-.48-.17-.93-.46-1.27zM12 17.5L6.5 12H10v-2h4v2h3.5L12 17.5zM5.12 5l.81-1h12l.94 1H5.12z"/></svg>`,
-  code: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M9.4 16.6L4.8 12l4.6-4.6L8 6l-6 6 6 6 1.4-1.4zm5.2 0l4.6-4.6-4.6-4.6L16 6l6 6-6 6-1.4-1.4z"/></svg>`,
-  default: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z"/></svg>`,
-};
-
 function getFileIconType(ext, isDir) {
   if (isDir) return 'folder';
   // ext 在数据流里有两种历史格式：file-ops 给 '.png' 带点、folder:list 与重命名给 'png' 不带点。
   // 下面按带点比较，故先补点；两种格式都收，避免引用仓/文件夹浏览里的类型判定整体失效。
   const raw = (ext || '').toLowerCase();
   const e = raw.startsWith('.') ? raw : '.' + raw;
-  const imageExts = ['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.svg', '.ico'];
-  const videoExts = ['.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm'];
+  const imageExts = ['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.svg', '.ico', '.tif', '.tiff'];
+  const videoExts = ['.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm', '.m4v', '.mpg', '.mpeg', '.3gp'];
   const audioExts = ['.mp3', '.wav', '.flac', '.aac', '.ogg', '.wma'];
   const docExts = ['.txt', '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.md', '.rtf'];
   const archiveExts = ['.zip', '.rar', '.7z', '.tar', '.gz', '.bz2'];
@@ -174,6 +194,7 @@ async function init() {
 
   // 应用顶栏顺序
   applyToolbarOrder();
+  updateSearchScopeBtn();
 
   // 绑定事件
   bindEvents();
@@ -196,9 +217,9 @@ async function init() {
     applyFolderOpMode();
   });
 
-  // 监听剪贴板采集变化（后台自动采到新内容时刷新列表）
-  window.api.clip.onChanged(() => {
-    if (isActiveClipboardDock()) renderFiles();
+  // 监听剪贴板采集变化：后台采到新内容时增量插入，避免整表重建打断选中/展开/滚动
+  window.api.clip.onChanged((payload) => {
+    if (isActiveClipboardDock() && window.__clipUI) window.__clipUI.onChanged(payload);
   });
 
   // 监听 pin 状态
@@ -275,6 +296,15 @@ async function refreshReferenceDock() {
     state.files = [];
     return;
   }
+  // 正在浏览子文件夹时，刷新的是当前所在目录而不是仓根目录——
+  // 否则子文件夹里做完操作，列表会"自动跳回根目录"
+  if (state.folderMode && state.folderStack.length > 0) {
+    const cur = state.folderStack[state.folderStack.length - 1];
+    const r = await window.api.folder.list(cur.path);
+    if (r.success) { state.files = r.files; applySort(); }
+    await refreshPoolIfSearching();
+    return;
+  }
   const result = await window.api.folder.list(preset.folderPath);
   if (result.success) {
     state.files = result.files;
@@ -283,6 +313,7 @@ async function refreshReferenceDock() {
     // 文件夹失效：显示空状态
     state.files = [];
   }
+  await refreshPoolIfSearching(); // 递归搜索池同步刷新
 }
 
 async function saveCurrentPreset() {
@@ -430,6 +461,8 @@ function updateActionsForDockType() {
   // "重命名"：仅修改模式可见（安全模式不改磁盘）
   const renameItem = document.querySelector('#context-menu .menu-item[data-action="rename"]');
   if (renameItem) renameItem.classList.toggle('hidden', !isModify);
+
+  // "移动到文件夹"：仅修改模式可见（安全模式不改磁盘）
 }
 
 // ===== 文件仓类型指示 =====
@@ -440,10 +473,10 @@ function updateDockTypeIndicator() {
   const icons = getThemeIcons(state.settings.theme || 'default');
   const key = isRef ? 'dock-ref' : (isClip && icons.ui['dock-clip'] ? 'dock-clip' : 'dock-temp');
   els.dockTypeIcon.innerHTML = icons.ui[key] || '';
-  els.dockTypeLabel.textContent = isRef ? '引用' : (isClip ? '剪贴板' : '临时');
+  els.dockTypeLabel.textContent = isRef ? '引用' : (isClip ? '剪贴' : '临时');
   els.dockTypeIndicator.title = isRef
     ? `引用仓${state.activePreset?.folderPath ? '：' + state.activePreset.folderPath : ''}`
-    : (isClip ? '剪贴板仓：自动保存复制的文本 / 图片 / 混排' : '临时仓：仅存文件引用');
+    : (isClip ? '剪贴仓：自动保存复制的文本 / 图片 / 混排' : '临时仓：仅存文件引用');
   // 同步刷新各操作的可用性（文件仓类型变化时）
   updateActionsForDockType();
 }
@@ -521,8 +554,8 @@ function updateViewToggleIcon() {
 // ===== 筛选 =====
 // 类型/后缀名分组定义（exts 不带点，便于显示与比较）
 const FILTER_CATEGORIES = [
-  { key: 'image',   label: '图片',   exts: ['png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp', 'svg', 'ico'] },
-  { key: 'video',   label: '视频',   exts: ['mp4', 'avi', 'mkv', 'mov', 'wmv', 'flv', 'webm'] },
+  { key: 'image',   label: '图片',   exts: ['png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp', 'svg', 'ico', 'tif', 'tiff'] },
+  { key: 'video',   label: '视频',   exts: ['mp4', 'avi', 'mkv', 'mov', 'wmv', 'flv', 'webm', 'm4v', 'mpg', 'mpeg', '3gp'] },
   { key: 'audio',   label: '音频',   exts: ['mp3', 'wav', 'flac', 'aac', 'ogg', 'wma'] },
   { key: 'document',label: '文档',   exts: ['txt', 'pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'md', 'rtf'] },
   { key: 'archive', label: '压缩包', exts: ['zip', 'rar', '7z', 'tar', 'gz', 'bz2'] },
@@ -543,28 +576,80 @@ function isFilterReducing() {
   return Object.values(state.filterChecked).some(v => v === false);
 }
 
-// 取当前模式下应显示的文件列表（应用筛选）
+// ===== 编辑模式搜索 =====
+const EMPTY_TEXT_DEFAULT = '拖入文件到这里';
+const SEARCH_ICON_FLAT = '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"><path d="M2 5 Q2 3.8 3.2 3.8 L6.2 3.8 L7.6 5.3 L12.8 5.3 Q14 5.3 14 6.5 L14 11.6 Q14 12.8 12.8 12.8 L3.2 12.8 Q2 12.8 2 11.6 Z"/></svg>';
+const SEARCH_ICON_DEEP = '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"><path d="M2 4.6 Q2 3.4 3.2 3.4 L6 3.4 L7.4 4.8 L12.8 4.8 Q14 4.8 14 6 L14 7.4 L2 7.4 Z"/><path d="M2.6 8.8 L13.4 8.8 L12.4 12.9 L3.6 12.9 Z" stroke-linecap="round"/></svg>';
+
+function updateSearchScopeBtn() {
+  if (!els.searchScopeBtn) return;
+  const deep = state.searchRecursive;
+  els.searchScopeBtn.innerHTML = deep ? SEARCH_ICON_DEEP : SEARCH_ICON_FLAT;
+  els.searchScopeBtn.title = deep ? '当前：含所有子目录（点击改为仅当前目录）' : '当前：仅当前目录（点击改为含所有子目录）';
+  els.searchScopeBtn.classList.toggle('active', deep);
+}
+
+// 是否处于搜索中（编辑模式 + 关键词非空）
+function isSearchActive() {
+  return state.editMode && state.searchQuery.trim() !== '';
+}
+// 递归搜索生效的前提：有真实文件夹上下文（临时仓没有可递归的目录）
+function searchRecursiveEffective() {
+  return state.searchRecursive && (state.folderMode || isActiveReferenceDock());
+}
+// 当前列表池：递归搜索时用搜索结果，否则用当前目录列表
+function getVisiblePool() {
+  if (isSearchActive() && searchRecursiveEffective()) return state.searchResults || [];
+  return state.files;
+}
+async function refreshSearchResults() {
+  const root = getCurrentFolderPath();
+  if (!root) { state.searchResults = null; return; }
+  state.searchResults = null;
+  renderFiles(); // 立即反馈“搜索中…”
+  const r = await window.api.folder.listRecursive(root);
+  state.searchResults = r.success ? r.files : [];
+  renderFiles();
+}
+async function refreshPoolIfSearching() {
+  if (isSearchActive() && searchRecursiveEffective()) await refreshSearchResults();
+}
+function clearSearch() {
+  state.searchQuery = '';
+  state.searchResults = null;
+  if (els.searchInput) els.searchInput.value = '';
+}
+
+// 取当前模式下应显示的文件列表（筛选规则 × 搜索关键词 联动）
 function getFilteredFiles() {
-  const files = state.files;
+  const files = getVisiblePool();
   const hasUnchecked = state.filterMode === 'type'
     ? Object.keys(state.filterChecked).some(k => k.startsWith('type:') && state.filterChecked[k] === false)
     : Object.keys(state.filterChecked).some(k => k.startsWith('ext:') && state.filterChecked[k] === false);
-  if (!hasUnchecked) return files;
-
-  return files.filter(f => {
-    if (state.filterMode === 'type') {
-      if (f.isDirectory) return state.filterChecked['type:folder'] !== false;
-      // 快捷方式单独分类（.lnk/.url 不归入"其他"）
-      if (isShortcutFile(f)) return state.filterChecked['type:shortcut'] !== false;
-      const typeKey = getFileIconType(f.ext, f.isDirectory);
-      const key = `type:${typeKey === 'default' ? 'other' : typeKey}`;
-      return state.filterChecked[key] !== false;
-    } else {
-      if (f.isDirectory) return state.filterChecked['ext:folder'] !== false;
-      const ext = (f.ext || '').toLowerCase().replace(/^\./, '');
-      return state.filterChecked[`ext:${ext}`] !== false;
-    }
-  });
+  let out;
+  if (!hasUnchecked) {
+    out = files.slice();
+  } else {
+    out = files.filter(f => {
+      if (state.filterMode === 'type') {
+        if (f.isDirectory) return state.filterChecked['type:folder'] !== false;
+        // 快捷方式单独分类（.lnk/.url 不归入"其他"）
+        if (isShortcutFile(f)) return state.filterChecked['type:shortcut'] !== false;
+        const typeKey = getFileIconType(f.ext, f.isDirectory);
+        const key = `type:${typeKey === 'default' ? 'other' : typeKey}`;
+        return state.filterChecked[key] !== false;
+      } else {
+        if (f.isDirectory) return state.filterChecked['ext:folder'] !== false;
+        const ext = (f.ext || '').toLowerCase().replace(/^\./, '');
+        return state.filterChecked[`ext:${ext}`] !== false;
+      }
+    });
+  }
+  const q = state.searchQuery.trim().toLowerCase();
+  if (q) out = out.filter(f => (f.name || '').toLowerCase().includes(q));
+  // 递归结果来自目录遍历，按当前排序规则重排（普通列表本就有序，无需重排）
+  if (isSearchActive() && searchRecursiveEffective()) out.sort(compareFiles);
+  return out;
 }
 
 // 渲染筛选面板内容
@@ -577,6 +662,39 @@ function renderFilterBody() {
   } else {
     renderExtModeFilter(files);
   }
+  updateFilterToggleLabel();
+}
+
+// ===== 筛选：全选/全不选 切换条 =====
+// 收集当前筛选模式下面板里展示的全部选项 key
+function filterVisibleKeys() {
+  return Array.from(els.filterBody.querySelectorAll('.filter-item'))
+    .map(el => el.dataset.key)
+    .filter(Boolean);
+}
+
+function updateFilterToggleLabel() {
+  if (!els.filterToggleAll) return;
+  const keys = filterVisibleKeys();
+  const anyUnchecked = keys.length > 0 && keys.some(k => state.filterChecked[k] === false);
+  els.filterToggleAll.textContent = anyUnchecked ? '全选' : '全不选';
+}
+
+function toggleFilterAll() {
+  const keys = filterVisibleKeys();
+  if (keys.length === 0) return;
+  const anyUnchecked = keys.some(k => state.filterChecked[k] === false);
+  if (anyUnchecked) {
+    // 全选：清掉所有 false 记录（未记录 = 默认选中）
+    keys.forEach(k => { if (state.filterChecked[k] === false) delete state.filterChecked[k]; });
+  } else {
+    // 全不选：全部记为 false
+    keys.forEach(k => { state.filterChecked[k] = false; });
+  }
+  persistFilter();
+  renderFiles();
+  renderFilterBody();
+  updateFilterButtonState();
 }
 
 // 按类型模式
@@ -704,13 +822,8 @@ function switchFilterMode(mode) {
 function openFilterPanel() {
   renderFilterBody();
   const rect = els.filterBtn.getBoundingClientRect();
-  const panelW = 220;
-  let left = rect.left;
-  if (left + panelW > window.innerWidth - 4) left = window.innerWidth - panelW - 4;
-  if (left < 4) left = 4;
-  els.filterPanel.style.left = left + 'px';
-  els.filterPanel.style.top = (rect.bottom + 4) + 'px';
   els.filterPanel.classList.remove('hidden');
+  clampPopup(els.filterPanel, rect.left, rect.bottom + 4);
   els.filterPanel.querySelectorAll('.filter-mode-btn').forEach(btn => {
     btn.classList.toggle('active', btn.dataset.filtermode === state.filterMode);
   });
@@ -742,6 +855,7 @@ async function persistFilter() {
 
 // ===== 文件渲染 =====
 function renderFiles() {
+  hideFilePreview();
   // 剪贴板仓：交给独立模块渲染，隐藏文件区
   if (isActiveClipboardDock()) {
     applyClipDockClass();
@@ -752,19 +866,20 @@ function renderFiles() {
   els.fileList.innerHTML = '';
 
   const visible = getFilteredFiles();
+  const pool = getVisiblePool();
+  const searchingNow = isSearchActive() && searchRecursiveEffective() && state.searchResults === null;
 
-  if (state.files.length === 0) {
+  if (pool.length === 0 || visible.length === 0 || searchingNow) {
     els.emptyState.style.display = 'flex';
     els.fileList.style.display = 'none';
-    renderEmptyIcon();
-  } else if (visible.length === 0) {
-    // 有文件但被筛选全部隐藏
-    els.emptyState.style.display = 'flex';
-    els.fileList.style.display = 'none';
+    if (searchingNow) els.emptyText.textContent = '搜索中…';
+    else if (isSearchActive() && visible.length === 0) els.emptyText.textContent = `无匹配“${state.searchQuery.trim()}”的文件`;
+    else els.emptyText.textContent = EMPTY_TEXT_DEFAULT;
     renderEmptyIcon();
   } else {
     els.emptyState.style.display = 'none';
     els.fileList.style.display = '';
+    els.emptyText.textContent = EMPTY_TEXT_DEFAULT;
   }
 
   visible.forEach((file, index) => {
@@ -772,11 +887,14 @@ function renderFiles() {
     els.fileList.appendChild(item);
   });
 
-  // 文件计数：筛选生效时显示 "可见/总数"
-  if (isFilterReducing() && visible.length !== state.files.length) {
-    els.fileCount.textContent = `${visible.length}/${state.files.length} 个文件`;
+  // 缩略图/系统图标按需挂载（缓存命中立即应用，其余交给 IntersectionObserver）
+  mountFileMedia();
+
+  // 文件计数：筛选/搜索生效时显示 "可见/总数"
+  if ((isFilterReducing() || isSearchActive()) && visible.length !== pool.length) {
+    els.fileCount.textContent = `${visible.length}/${pool.length} 个文件`;
   } else {
-    els.fileCount.textContent = `${state.files.length} 个文件`;
+    els.fileCount.textContent = `${pool.length} 个文件`;
   }
 
   // 面板打开时同步刷新筛选项计数
@@ -800,14 +918,21 @@ function createFileItem(file, index) {
   const checked = state.selectedPaths.has(file.path);
   const checkSvg = getThemeIcons(state.settings.theme || 'default').check;
 
+  // 缩略图/系统图标：图片与视频直接出缩略图（网格大图、列表小图）；
+  // 主题没设计的后缀用 Windows 关联应用图标
+  const mediaKind = getMediaKind(file);
+  const mediaAttr = mediaKind
+    ? ` data-media-path="${escHtml(file.path)}" data-media-kind="${mediaKind}"`
+    : '';
+
   if (state.editMode) {
     item.classList.toggle('checked', checked);
     item.innerHTML = `
-      <div class="file-checkbox${checked ? ' checked' : ''}" data-path="${file.path}">
+      <div class="file-checkbox${checked ? ' checked' : ''}" data-path="${escHtml(file.path)}">
         ${checked ? checkSvg : ''}
       </div>
-      <div class="file-icon" data-type="${icon.type}">${icon.svg}</div>
-      <div class="file-name" title="${file.name}">${file.name}</div>
+      <div class="file-icon"${mediaAttr} data-type="${icon.type}">${icon.svg}</div>
+      <div class="file-name" title="${escHtml(file.name)}">${escHtml(file.name)}</div>
     `;
 
     item.addEventListener('click', (e) => {
@@ -823,8 +948,8 @@ function createFileItem(file, index) {
     });
   } else {
     item.innerHTML = `
-      <div class="file-icon" data-type="${icon.type}">${icon.svg}</div>
-      <div class="file-name" title="${file.name}">${file.name}</div>
+      <div class="file-icon"${mediaAttr} data-type="${icon.type}">${icon.svg}</div>
+      <div class="file-name" title="${escHtml(file.name)}">${escHtml(file.name)}</div>
     `;
 
     item.addEventListener('dblclick', (e) => {
@@ -849,6 +974,12 @@ function createFileItem(file, index) {
     });
   }
 
+  // Ctrl+悬停 预览大图 / 视频片段（仅图片与视频）
+  if (isPreviewableFile(file)) {
+    item.addEventListener('mousemove', (e) => handlePreviewMouseMove(e, file));
+    item.addEventListener('mouseleave', hideFilePreview);
+  }
+
   // 临时文件标志（真实 DOM 元素，避免 ::after 被冰棍主题 .file-item::after 装饰覆盖导致"临时"消失）
   if (state.temporaryPaths.has(file.path)) {
     const badge = document.createElement('span');
@@ -860,11 +991,304 @@ function createFileItem(file, index) {
   return item;
 }
 
+// ===== 网格缩略图 / 系统图标 =====
+// 图片/视频在网格视图直接显示缩略图；主题没设计的后缀用 Windows 关联应用图标。
+// 按需生成：IntersectionObserver 只处理滚进可视区的项；结果缓存避免重渲染时重新生成。
+const mediaCache = new Map();    // path → dataURL（'' 表示生成失败，退回主题图标且不再重试）
+const mediaPending = new Set();  // 正在生成的 path
+let thumbIO = null;
+
+function getMediaKind(file) {
+  const type = getFileIconType(file.ext, file.isDirectory);
+  if (type === 'image') return 'image';
+  if (type === 'video') return 'video';
+  if (type === 'default') return 'icon'; // 未知后缀 → 系统关联图标
+  return null;                            // 主题已有图标（文件夹/文档/压缩包等）
+}
+
+function isPreviewableFile(file) {
+  const k = getMediaKind(file);
+  return k === 'image' || k === 'video';
+}
+
+function applyMedia(node, url) {
+  node.classList.add('has-thumb');
+  node.classList.remove('thumb-pending');
+  node.innerHTML = '<img class="file-thumb" src="' + url + '" draggable="false" alt="">';
+}
+
+function ensureThumbObserver() {
+  if (thumbIO) return thumbIO;
+  thumbIO = new IntersectionObserver((entries) => {
+    entries.forEach(en => {
+      if (!en.isIntersecting) return;
+      thumbIO.unobserve(en.target);
+      requestMedia(en.target);
+    });
+  }, { root: els.fileArea, rootMargin: '80px' });
+  return thumbIO;
+}
+
+// 让 Chromium 试解码一张图（file URL 或 dataURL），成功返回原 URL，失败返回 ''
+function probeImageUrl(u) {
+  return new Promise((resolve) => {
+    const im = new Image();
+    im.onload = () => resolve(u);
+    im.onerror = () => resolve('');
+    im.src = u;
+  });
+}
+
+async function requestMedia(node) {
+  const p = node.dataset.mediaPath;
+  const kind = node.dataset.mediaKind;
+  if (!p || !kind || mediaPending.has(p)) return;
+  if (mediaCache.has(p)) {
+    const u = mediaCache.get(p);
+    if (u) applyMedia(node, u);
+    return;
+  }
+  mediaPending.add(p);
+  let url = '';
+  try {
+    if (kind === 'image') {
+      // 解码链：nativeImage 缩略图（png/jpg/webp…）→ Chromium 直接解码原文件
+      //（gif/svg/伪装成 jpg 的动图等原生解不了的）→ 系统关联图标（tiff/heic 等兜底）
+      url = await window.api.files.thumb(p);
+      if (!url) url = await probeImageUrl(fileUrlOf(p));
+      if (!url) url = await window.api.files.fileIcon(p);
+    } else if (kind === 'video') {
+      url = await extractVideoFrame(p);
+      if (!url) url = await window.api.files.fileIcon(p); // Chromium 解不了的视频（avi/mkv…）退回系统图标
+    } else {
+      url = await window.api.files.fileIcon(p);
+    }
+  } catch (e) { url = ''; }
+  mediaPending.delete(p);
+  if (mediaCache.size > 600) mediaCache.clear();
+  mediaCache.set(p, url || '');
+  if (url) applyMedia(node, url);
+}
+
+// 渲染后挂载：缓存命中立即应用，未命中的交给 IntersectionObserver 懒加载
+function mountFileMedia() {
+  if (!els.fileList) return;
+  ensureThumbObserver().disconnect();
+  els.fileList.querySelectorAll('[data-media-path]').forEach(node => {
+    const cached = mediaCache.get(node.dataset.mediaPath);
+    if (cached) {
+      applyMedia(node, cached);
+    } else if (!mediaPending.has(node.dataset.mediaPath)) {
+      node.classList.add('thumb-pending');
+      thumbIO.observe(node);
+    }
+  });
+}
+
+// ===== 视频抽帧（渲染层解码；Chromium 支持的格式才出缩略图，超时/失败返回空串）=====
+const videoQueue = [];
+let videoRunning = 0;
+
+function extractVideoFrame(filePath, maxW = 320) {
+  return new Promise((resolve) => {
+    videoQueue.push({ filePath, maxW, resolve });
+    pumpVideoQueue();
+  });
+}
+
+// 最多并发 2 个解码，避免同时加载一堆视频拖垮解码器
+function pumpVideoQueue() {
+  if (videoRunning >= 2 || !videoQueue.length) return;
+  const job = videoQueue.shift();
+  videoRunning++;
+  doExtractVideoFrame(job.filePath, job.maxW).then((url) => {
+    videoRunning--;
+    job.resolve(url);
+    pumpVideoQueue();
+  });
+}
+
+function doExtractVideoFrame(filePath, maxW) {
+  return new Promise((resolve) => {
+    const v = document.createElement('video');
+    let done = false;
+    const finish = (url) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      v.removeAttribute('src');
+      try { v.load(); } catch (e) {}
+      resolve(url);
+    };
+    const timer = setTimeout(() => finish(''), 5000);
+    v.muted = true;
+    v.preload = 'auto';
+    v.onloadedmetadata = () => {
+      // 取靠近开头的画面（约 10% 处），跳过纯黑首帧
+      try { v.currentTime = Math.min(1, (v.duration || 2) * 0.1); } catch (e) {}
+    };
+    v.onseeked = () => {
+      try {
+        const vw = v.videoWidth || 320, vh = v.videoHeight || 180;
+        const scale = Math.min(1, maxW / vw);
+        const c = document.createElement('canvas');
+        c.width = Math.max(2, Math.round(vw * scale));
+        c.height = Math.max(2, Math.round(vh * scale));
+        c.getContext('2d').drawImage(v, 0, 0, c.width, c.height);
+        finish(c.toDataURL('image/jpeg', 0.72));
+      } catch (e) { finish(''); }
+    };
+    v.onerror = () => finish('');
+    v.src = 'file:///' + encodeURI(filePath.replace(/\\/g, '/')).replace(/#/g, '%23').replace(/\?/g, '%3F');
+  });
+}
+
+// ===== Ctrl+悬停 预览（独立置顶小窗，不抢焦点，自动避开屏幕边缘）=====
+// 即时弹出：无防抖、无过渡动画——面向大量调图场景，越快越好。
+// 触发方式走设置项 previewTrigger：'ctrl'（默认）= 按住 Ctrl 悬停；'hover' = 悬停即显。
+// 按 L 可把当前预览"钉住"：升级为可拖动、等比缩放的独立小窗，点右上角 × 关闭。
+// 钉住窗可同时开多个，钉住后悬停继续工作。
+let previewTarget = null;
+let previewActive = false;
+
+function handlePreviewMouseMove(e, file) {
+  const needCtrl = !state.settings || state.settings.previewTrigger !== 'hover';
+  if (needCtrl && !e.ctrlKey) {
+    hideFilePreview();
+    return;
+  }
+  if (e.buttons !== 0) {
+    // 按住鼠标（拖拽预备 / 框选 / 右键拖动）期间不弹预览
+    hideFilePreview();
+    return;
+  }
+  if (previewActive && previewTarget && previewTarget.path === file.path) return;
+  previewTarget = { path: file.path, kind: getMediaKind(file) };
+  previewActive = true;
+  window.api.preview.show({ path: previewTarget.path, kind: previewTarget.kind });
+}
+
+// 输入框聚焦 / 面板或对话框打开 = UI 正被使用，不应自动收起
+function uiBusy() {
+  const ae = document.activeElement;
+  const tag = ae && ae.tagName ? ae.tagName.toLowerCase() : '';
+  if (tag === 'input' || tag === 'textarea' || tag === 'select') return true;
+  if (els.app.classList.contains('panel-open')) return true;
+  if (document.querySelector('.fd-dialog')) return true;
+  return false;
+}
+
+function hideFilePreview() {
+  previewTarget = null;
+  if (!previewActive) return;
+  previewActive = false;
+  window.api.preview.hide(); // 只收悬停窗；钉住窗由用户 × / Esc 关闭
+}
+
+// 剪贴板仓等非文件来源的图片（dataURL）也走同一套预览/钉住
+window.__previewFromUrl = (url) => {
+  if (!url) return;
+  if (previewActive && previewTarget && previewTarget.url === url) return;
+  previewTarget = { url, kind: 'image' };
+  previewActive = true;
+  window.api.preview.show({ url, kind: 'image' });
+};
+window.__hideFilePreview = hideFilePreview;
+window.__previewHoverWantsCtrl = () => !(state.settings && state.settings.previewTrigger === 'hover');
+
+// Ctrl 按下时鼠标可能早已静止在文件上（不会再触发 mousemove），主动看一眼光标下面
+let lastMousePos = { x: -1, y: -1 };
+
+function showPreviewUnderCursor() {
+  if (state.settings && state.settings.previewTrigger === 'hover') return; // 悬停模式无需 Ctrl
+  // 输入框聚焦（重命名/搜索/命名框）时不弹预览——Ctrl+V 粘贴不该触发悬浮
+  const ae = document.activeElement;
+  const aeTag = ae && ae.tagName ? ae.tagName.toLowerCase() : '';
+  if (aeTag === 'input' || aeTag === 'textarea' || aeTag === 'select') return;
+  if (lastMousePos.x < 0) return;
+  const el = document.elementFromPoint(lastMousePos.x, lastMousePos.y);
+  if (!el) return;
+  // 剪贴板仓大图（dataURL）
+  const clipImg = el.closest ? el.closest('.clip-big') : null;
+  if (clipImg && clipImg.src && clipImg.src.startsWith('data:')) {
+    window.__previewFromUrl(clipImg.src);
+    return;
+  }
+  const item = el.closest ? el.closest('.file-item') : null;
+  if (!item) return;
+  const file = state.files.find(f => f.path === item.dataset.path);
+  if (!file || !isPreviewableFile(file)) return;
+  if (previewActive && previewTarget && previewTarget.path === file.path) return;
+  previewTarget = { path: file.path, kind: getMediaKind(file) };
+  previewActive = true;
+  window.api.preview.show({ path: previewTarget.path, kind: previewTarget.kind });
+}
+
+// L 钉住（原生热键轮询与页面 keydown 共用；150ms 去重防双触发）
+let lastPinAt = 0;
+
+// 读取钉住热键组合（如 'l' 或 'ctrl+l'），判断 keydown 是否命中
+function pinKeyMatches(e) {
+  const combo = String((state.settings && state.settings.hotkeys && state.settings.hotkeys.pinKey) || 'l').toLowerCase();
+  const parts = combo.split('+');
+  const key = parts[parts.length - 1];
+  if (e.key.toLowerCase() !== key) return false;
+  if (e.ctrlKey !== parts.includes('ctrl')) return false;
+  if (e.altKey !== parts.includes('alt')) return false;
+  if (e.shiftKey !== parts.includes('shift')) return false;
+  return true;
+}
+
+// 快捷键录制（设置区）：hkRecording 非空 = 正在录制
+let hkRecording = null;
+
+function stopHotkeyRecord(combo) {
+  hkRecording = null;
+  const box = document.getElementById('setting-hk-pinkey');
+  if (box) box.classList.remove('recording');
+  renderHotkeyUI();
+  if (combo) {
+    const hk = Object.assign({}, state.settings.hotkeys || {});
+    hk.pinKey = combo;
+    window.api.settings.update({ hotkeys: hk }).then(s => { state.settings = s; });
+  }
+}
+
+function renderHotkeyUI() {
+  const box = document.getElementById('setting-hk-pinkey');
+  if (box) box.textContent = String((state.settings && state.settings.hotkeys && state.settings.hotkeys.pinKey) || 'l').toUpperCase();
+  const sel = document.getElementById('setting-hk-gesture');
+  if (sel) sel.value = (state.settings && state.settings.hotkeys && state.settings.hotkeys.dockSwitchGesture) || 'xbutton2+wheel';
+}
+
+function tryPinPreview() {
+  const now = Date.now();
+  if (now - lastPinAt < 150) return;
+  if (!previewActive || !previewTarget) return;
+  const ae = document.activeElement;
+  const tag = ae && ae.tagName ? ae.tagName.toLowerCase() : '';
+  if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
+  lastPinAt = now;
+  // 图片组：悬浮中的图片在多选集合里、且多选中有多张可预览文件 → 整组钉住；
+  // 悬浮的图不在多选里（或只选了一张）→ 正常钉当前这张
+  if (previewTarget.path && state.selectedPaths.has(previewTarget.path)) {
+    const sel = getSelectedFiles().filter(f => isPreviewableFile(f));
+    if (sel.length > 1) {
+      const items = sel.map(f => ({ path: f.path, kind: getMediaKind(f), name: f.name || '' }));
+      const index = Math.max(0, items.findIndex(it => it.path === previewTarget.path));
+      window.api.preview.pin({ items, index });
+      return;
+    }
+  }
+  window.api.preview.pin();
+}
+
 // ===== 编辑模式 =====
 function toggleEditMode() {
   state.editMode = !state.editMode;
   if (!state.editMode) {
     state.selectedPaths.clear();
+    clearSearch(); // 退出编辑模式连带清空搜索，列表恢复完整
   }
   els.editBtn.classList.toggle('active', state.editMode);
   els.editBar.classList.toggle('hidden', !state.editMode);
@@ -873,25 +1297,30 @@ function toggleEditMode() {
 }
 
 function toggleSelect(filePath) {
-  if (state.selectedPaths.has(filePath)) {
-    state.selectedPaths.delete(filePath);
-  } else {
+  const willSelect = !state.selectedPaths.has(filePath);
+  if (willSelect) {
     state.selectedPaths.add(filePath);
+  } else {
+    state.selectedPaths.delete(filePath);
   }
-  renderFiles();
+  // 单点更新选中态：整表重渲染会让大目录勾选卡顿
+  const item = Array.from(els.fileList.children).find(el => el.dataset.path === filePath);
+  if (item) setItemChecked(item, willSelect);
 }
 
 function selectAllFiles() {
-  if (state.selectedPaths.size === state.files.length) {
-    state.selectedPaths.clear();
+  const pool = getVisiblePool();
+  const allSelected = pool.length > 0 && pool.every(f => state.selectedPaths.has(f.path));
+  if (allSelected) {
+    pool.forEach(f => state.selectedPaths.delete(f.path));
   } else {
-    state.files.forEach(f => state.selectedPaths.add(f.path));
+    pool.forEach(f => state.selectedPaths.add(f.path));
   }
   renderFiles();
 }
 
 function getSelectedFiles() {
-  return state.files.filter(f => state.selectedPaths.has(f.path));
+  return getVisiblePool().filter(f => state.selectedPaths.has(f.path));
 }
 
 // 全不选：清空当前选择
@@ -989,6 +1418,7 @@ function showInfoDialog(title, message) {
   return new Promise((resolve) => {
     const overlay = document.createElement('div');
     overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.4);display:flex;align-items:center;justify-content:center;z-index:9999;';
+    overlay.className = 'fd-dialog';
     overlay.innerHTML = `
       <div style="background:var(--bg);border-radius:8px;padding:20px;max-width:320px;box-shadow:0 8px 24px rgba(0,0,0,0.2);">
         <h3 style="margin:0 0 12px;font-size:14px;">${title}</h3>
@@ -1011,6 +1441,7 @@ function showPromptDialog(title, label, defaultValue = '') {
   return new Promise((resolve) => {
     const overlay = document.createElement('div');
     overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.4);display:flex;align-items:center;justify-content:center;z-index:9999;';
+    overlay.className = 'fd-dialog';
     overlay.innerHTML = `
       <div style="background:var(--bg);border-radius:8px;padding:20px;max-width:320px;box-shadow:0 8px 24px rgba(0,0,0,0.2);">
         <h3 style="margin:0 0 12px;font-size:14px;">${title}</h3>
@@ -1063,6 +1494,7 @@ function showConfirmDialog({ title, message, checkboxLabel }) {
   return new Promise((resolve) => {
     const overlay = document.createElement('div');
     overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.4);display:flex;align-items:center;justify-content:center;z-index:9999;';
+    overlay.className = 'fd-dialog';
     overlay.innerHTML = `
       <div style="background:var(--bg);border-radius:8px;padding:20px;max-width:320px;box-shadow:0 8px 24px rgba(0,0,0,0.2);">
         <h3 style="margin:0 0 12px;font-size:14px;">${title}</h3>
@@ -1092,22 +1524,23 @@ function showConfirmDialog({ title, message, checkboxLabel }) {
 }
 
 // ===== 排序 =====
+function compareFiles(a, b) {
+  let cmp = 0;
+  if (state.sortBy === 'name') {
+    cmp = (a.name || '').localeCompare(b.name || '', 'zh');
+  } else if (state.sortBy === 'time') {
+    cmp = (a.mtime || 0) - (b.mtime || 0);
+  } else if (state.sortBy === 'size') {
+    cmp = (a.size || 0) - (b.size || 0);
+  }
+  if (a.isDirectory !== b.isDirectory) {
+    return a.isDirectory ? -1 : 1;
+  }
+  return cmp * (state.sortDirection === 'asc' ? 1 : -1);
+}
+
 function applySort() {
-  const dir = state.sortDirection === 'asc' ? 1 : -1;
-  state.files.sort((a, b) => {
-    let cmp = 0;
-    if (state.sortBy === 'name') {
-      cmp = a.name.localeCompare(b.name, 'zh');
-    } else if (state.sortBy === 'time') {
-      cmp = (a.mtime || 0) - (b.mtime || 0);
-    } else if (state.sortBy === 'size') {
-      cmp = (a.size || 0) - (b.size || 0);
-    }
-    if (a.isDirectory !== b.isDirectory) {
-      return a.isDirectory ? -1 : 1;
-    }
-    return cmp * dir;
-  });
+  state.files.sort(compareFiles);
 }
 
 function updateSortMenuUI() {
@@ -1120,9 +1553,8 @@ function updateSortMenuUI() {
 
 function showSortMenu(x, y) {
   updateSortMenuUI();
-  els.sortMenu.style.left = `${x}px`;
-  els.sortMenu.style.top = `${y}px`;
   els.sortMenu.classList.remove('hidden');
+  clampPopup(els.sortMenu, x, y);
 }
 
 function handleSortSelect(action, value) {
@@ -1146,6 +1578,7 @@ function resetFolderNavigation() {
   state.folderStack = [];
   state.folderFiles = [];
   state.temporaryPaths.clear();
+  clearSearch();
   els.app.classList.remove('folder-mode');
   updateBreadcrumb();
 }
@@ -1162,6 +1595,7 @@ async function enterFolder(folderPath, folderName) {
       state.folderMode = true;
       els.app.classList.add('folder-mode');
     }
+    clearSearch(); // 目录切换后搜索范围失效，清空重来
     state.folderStack.push({ path: folderPath, name: folderName });
     state.temporaryPaths.clear();
     state.files = result.files;
@@ -1177,6 +1611,7 @@ async function exitFolder() {
   if (state.folderStack.length === 0) return;
   state.folderStack.pop();
   state.temporaryPaths.clear();
+  clearSearch();
   if (state.folderStack.length === 0) {
     state.folderMode = false;
     els.app.classList.remove('folder-mode');
@@ -1206,6 +1641,7 @@ async function navigateToCrumb(index) {
     await exitFolder();
     return;
   }
+  clearSearch();
   const target = state.folderStack[state.folderStack.length - 1];
   const result = await window.api.folder.list(target.path);
   if (result.success) {
@@ -1225,7 +1661,7 @@ function updateBreadcrumb() {
   els.breadcrumbBar.classList.remove('hidden');
   let html = '';
   state.folderStack.forEach((item, i) => {
-    html += `<span class="breadcrumb-item" data-index="${i}">${item.name}</span>`;
+    html += `<span class="breadcrumb-item" data-index="${i}">${escHtml(item.name)}</span>`;
     if (i < state.folderStack.length - 1) {
       html += '<span class="breadcrumb-sep">›</span>';
     }
@@ -1238,32 +1674,114 @@ function updateBreadcrumb() {
   });
 }
 
-// ===== 拖出文件 =====
-function generateDragIcon(file) {
-  const canvas = document.createElement('canvas');
-  canvas.width = 32;
-  canvas.height = 32;
-  const ctx = canvas.getContext('2d');
-
-  const type = getFileIconType(file.ext, file.isDirectory);
-  const colors = {
-    folder: '#f59e0b', image: '#10b981', video: '#ef4444',
-    audio: '#8b5cf6', document: '#3b82f6', archive: '#6366f1',
-    code: '#14b8a6', default: '#6b7280',
-  };
-  const color = colors[type] || colors.default;
-
-  ctx.fillStyle = color;
-  ctx.fillRect(4, 4, 24, 28);
-  ctx.fillStyle = 'rgba(255,255,255,0.3)';
+// ===== 拖出拖影：缩略图（有图类）或类型色块 + 下方文件名 =====
+function roundedRectPath(ctx, x, y, w, h, r) {
   ctx.beginPath();
-  ctx.moveTo(20, 4);
-  ctx.lineTo(28, 12);
-  ctx.lineTo(20, 12);
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
   ctx.closePath();
-  ctx.fill();
+}
 
-  return canvas.toDataURL('image/png');
+// 画拖影画布：上方图片（按比例适配）或类型色块，下方深色药丸里放文件名
+function drawDragCanvas(imgEl, fileName, count, fallbackColor) {
+  const W = 132;
+  const IMG_H = 112;
+  const H = IMG_H + 34;
+  const c = document.createElement('canvas');
+  c.width = W;
+  c.height = H;
+  const ctx = c.getContext('2d');
+
+  if (imgEl) {
+    const iw = imgEl.naturalWidth || imgEl.width || 1;
+    const ih = imgEl.naturalHeight || imgEl.height || 1;
+    const scale = Math.min((W - 8) / iw, (IMG_H - 4) / ih, 4);
+    const dw = Math.max(2, Math.round(iw * scale));
+    const dh = Math.max(2, Math.round(ih * scale));
+    ctx.drawImage(imgEl, (W - dw) / 2, (IMG_H - dh) / 2 + 2, dw, dh);
+  } else {
+    // 无图可显示（文件夹/未知类型）：类型色圆角块
+    ctx.fillStyle = fallbackColor || '#6b7280';
+    roundedRectPath(ctx, (W - 56) / 2, (IMG_H - 56) / 2 + 2, 56, 56, 10);
+    ctx.fill();
+    ctx.fillStyle = 'rgba(255,255,255,0.35)';
+    roundedRectPath(ctx, (W - 56) / 2 + 10, (IMG_H - 56) / 2 + 12, 20, 6, 3);
+    ctx.fill();
+  }
+
+  // 多选拖出：右上角 ×N 角标
+  if (count > 1) {
+    ctx.fillStyle = 'rgba(28,28,30,0.88)';
+    ctx.beginPath();
+    ctx.arc(W - 14, 14, 11, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#fff';
+    ctx.font = '11px "Microsoft YaHei", sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('×' + count, W - 14, 15);
+  }
+
+  // 文件名药丸
+  let label = String(fileName || '');
+  ctx.font = '12px "Microsoft YaHei", "PingFang SC", sans-serif';
+  const maxTextW = W - 24;
+  while (ctx.measureText(label).width > maxTextW && label.length > 1) {
+    label = label.slice(0, -2) + '…';
+  }
+  const tw = Math.min(ctx.measureText(label).width, maxTextW);
+  const pillW = tw + 18, pillH = 22, pillY = IMG_H + 6;
+  ctx.fillStyle = 'rgba(28,28,30,0.88)';
+  roundedRectPath(ctx, (W - pillW) / 2, pillY, pillW, pillH, 7);
+  ctx.fill();
+  ctx.fillStyle = '#fff';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(label, W / 2, pillY + pillH / 2 + 1);
+
+  return c.toDataURL('image/png');
+}
+
+// 组装拖影：有缓存的缩略图直接用（瞬时），没缓存限时补取，超时退回色块
+async function getDragIconDataUrl(files) {
+  const first = files && files[0];
+  if (!first) return '';
+  const kind = getMediaKind(first);
+  let imgUrl = '';
+  if (kind === 'image' || kind === 'video') {
+    imgUrl = mediaCache.get(first.path) || '';
+    if (!imgUrl) {
+      try {
+        imgUrl = await Promise.race([
+          kind === 'image' ? window.api.files.thumb(first.path) : extractVideoFrame(first.path, 240),
+          new Promise(r => setTimeout(() => r(''), 160)),
+        ]) || '';
+      } catch (e) { imgUrl = ''; }
+    }
+  }
+  let imgEl = null;
+  if (imgUrl) {
+    try {
+      imgEl = await Promise.race([
+        new Promise((res, rej) => {
+          const im = new Image();
+          im.onload = () => res(im);
+          im.onerror = () => rej(new Error('img load fail'));
+          im.src = imgUrl;
+        }),
+        new Promise((res, rej) => setTimeout(() => rej(new Error('img load timeout')), 200)),
+      ]);
+    } catch (e) { imgEl = null; }
+  }
+  const colors = {
+    folder: '#f59e0b', image: '#10b981', video: '#ef4444', audio: '#8b5cf6',
+    document: '#3b82f6', archive: '#6366f1', code: '#14b8a6', default: '#6b7280',
+  };
+  const fallbackColor = colors[getFileIconType(first.ext, first.isDirectory)] || colors.default;
+  return drawDragCanvas(imgEl, first.name, files.length, fallbackColor);
 }
 
 function startDragOut(file, mode, mouseEvent) {
@@ -1283,10 +1801,11 @@ function startDragOut(file, mode, mouseEvent) {
       dragStarted = true;
       cleanup();
       e.preventDefault();
+      hideFilePreview(); // 开始拖拽时收起悬浮预览
 
-      const iconDataUrl = generateDragIcon(file);
-
-      window.api.files.startDrag([{ path: file.path, name: file.name, icon: iconDataUrl }]).then(async () => {
+      getDragIconDataUrl([file]).then((iconDataUrl) => {
+        return window.api.files.startDrag([{ path: file.path, name: file.name, icon: iconDataUrl }]);
+      }).then(async () => {
         // 根据上下文决定列表变化
         if (state.folderMode) {
           if (state.folderOpMode === 'modify') {
@@ -1311,18 +1830,22 @@ function startDragOut(file, mode, mouseEvent) {
           // 引用仓：左键拖出（move）由 OS 默认 copy 到目标位置。
           // 修改模式要让"移出"语义成立：把源文件移入回收站（可恢复），再刷新引用仓。
           // 安全模式拖出仅复制（列表不变），与"安全模式不改磁盘"语义一致。
-          if (state.folderOpMode === 'modify' && mode === 'move') {
+          // 拖出又放回自家窗口 = 取消拖出，不回收源文件（否则文件会凭空消失）。
+          if (state.folderOpMode === 'modify' && mode === 'move' && !justDroppedSelf()) {
             try {
               await window.api.files.delete([file.path]);
             } catch (err) {
               console.error('移出失败:', err);
             }
+          }
+          if (state.folderOpMode === 'modify') {
             await refreshReferenceDock();
             renderFiles();
           }
         } else {
           // 临时仓：左键拖出时根据设置决定是否从仓中移除引用
-          if (mode === 'move' && state.settings.removeOnDragOutFromTemp !== false) {
+          // 放回自家窗口 = 取消拖出，引用保留
+          if (mode === 'move' && state.settings.removeOnDragOutFromTemp !== false && !justDroppedSelf()) {
             // 左键移出：从列表移除引用
             removeFileFromList(file.path);
           }
@@ -1392,10 +1915,12 @@ function startEditDragOut(file, mouseEvent) {
 // 通用拖出文件（编辑模式多选拖出 / 移出按钮共用）
 async function dragOutFiles(filesToDrag, mode) {
   if (!filesToDrag || filesToDrag.length === 0) return;
+  hideFilePreview();
+  const icon = await getDragIconDataUrl(filesToDrag);
   const items = filesToDrag.map(file => ({
     path: file.path,
     name: file.name,
-    icon: generateDragIcon(file),
+    icon,
   }));
   await window.api.files.startDrag(items);
 
@@ -1420,15 +1945,19 @@ async function dragOutFiles(filesToDrag, mode) {
   } else if (isActiveReferenceDock()) {
     // 引用仓：修改模式左键拖出 / 移除按钮 = 真移出（OS 已 copy 到目标，源文件移入回收站，可恢复）
     // 安全模式拖出仅复制（列表不变）
+    // 拖出又放回自家窗口 = 取消拖出，不回收源文件
     if (state.folderOpMode === 'modify' && mode === 'move') {
-      for (const p of draggedPaths) {
-        try { await window.api.files.delete([p]); } catch (err) { console.error('移出失败:', err); }
+      if (!justDroppedSelf()) {
+        for (const p of draggedPaths) {
+          try { await window.api.files.delete([p]); } catch (err) { console.error('移出失败:', err); }
+        }
       }
       await refreshReferenceDock();
     }
   } else {
     // 临时仓：左键拖出时根据设置决定是否从列表移除引用
-    if (mode === 'move' && state.settings.removeOnDragOutFromTemp !== false) {
+    // 放回自家窗口 = 取消拖出，引用保留
+    if (mode === 'move' && state.settings.removeOnDragOutFromTemp !== false && !justDroppedSelf()) {
       state.files = state.files.filter(f => !draggedPaths.has(f.path));
     }
   }
@@ -1448,6 +1977,19 @@ function handleDragEnter(e) {
 
 function handleDragOver(e) {
   e.preventDefault();
+  // 修改模式下拖到文件夹项上 = 移入：文件夹项高亮、dropEffect 显示 move
+  els.fileList.querySelectorAll('.file-item.drop-target').forEach(x => x.classList.remove('drop-target'));
+  const overFolder = state.folderOpMode === 'modify' && (state.folderMode || isActiveReferenceDock());
+  if (overFolder) {
+    const el = document.elementFromPoint(e.clientX, e.clientY);
+    const item = el && el.closest ? el.closest('.file-item') : null;
+    const f = item && state.files.find(x => x.path === item.dataset.path);
+    if (f && f.isDirectory) {
+      item.classList.add('drop-target');
+      e.dataTransfer.dropEffect = 'move';
+      return;
+    }
+  }
   e.dataTransfer.dropEffect = 'copy';
 }
 
@@ -1458,8 +2000,14 @@ function handleDragLeave(e) {
   }
 }
 
+// 拖出后放回自家窗口 = 取消拖出：记录投放时间，拖出完成逻辑据此跳过回收/移除。
+// （startDrag 的 promise 在 OLE 拖放结束后才 resolve，此时 drop 事件刚同步发生过）
+let lastSelfDropAt = 0;
+const justDroppedSelf = () => Date.now() - lastSelfDropAt < 1500;
+
 async function handleDrop(e) {
   e.preventDefault();
+  lastSelfDropAt = Date.now();
   if (isActiveClipboardDock()) return;
   els.fileArea.classList.remove('drag-over');
   els.emptyState.classList.remove('drag-over');
@@ -1467,36 +2015,121 @@ async function handleDrop(e) {
   const files = Array.from(e.dataTransfer.files);
   if (files.length === 0) return;
 
-  const paths = files.map(f => f.path);
+  // 资源管理器式移动：修改模式下，把文件直接拖放到某个文件夹项上 = 移入该文件夹
+  if (state.folderOpMode === 'modify' && (state.folderMode || isActiveReferenceDock())) {
+    const dropEl = document.elementFromPoint(e.clientX, e.clientY);
+    const itemEl = dropEl && dropEl.closest ? dropEl.closest('.file-item') : null;
+    const target = itemEl && state.files.find(f => f.path === itemEl.dataset.path);
+    if (target && target.isDirectory) {
+      if (!await ensureModifyConfirmed()) return;
+      const norm = (p2) => String(p2).replace(/[\\/]+/g, '\\').replace(/[\\/]+$/, '').toLowerCase();
+      const destN = norm(target.path);
+      let failed = 0, moved = 0;
+      for (const src of realPaths) {
+        const srcN = norm(src);
+        if (srcN === destN) continue; // 放回原位 = 取消
+        if (srcN && destN.startsWith(srcN + '\\')) { failed++; continue; } // 文件夹移入自身内部
+        const r = await window.api.files.move(src, target.path);
+        r.success ? moved++ : failed++;
+      }
+      els.fileList.querySelectorAll('.file-item.drop-target').forEach(x => x.classList.remove('drop-target'));
+      await refreshCurrent();
+      if (failed) await showInfoDialog('部分移动失败', failed + ' 个文件未能移动。');
+      return;
+    }
+    els.fileList.querySelectorAll('.file-item.drop-target').forEach(x => x.classList.remove('drop-target'));
+  }
+
+  // 资源管理器式移动：修改模式下，把文件直接拖放到某个文件夹项上 = 移入该文件夹
+  if (state.folderOpMode === 'modify' && (state.folderMode || isActiveReferenceDock())) {
+    const dropEl = document.elementFromPoint(e.clientX, e.clientY);
+    const itemEl = dropEl && dropEl.closest ? dropEl.closest('.file-item') : null;
+    const target = itemEl && state.files.find(f => f.path === itemEl.dataset.path);
+    if (target && target.isDirectory) {
+      if (!await ensureModifyConfirmed()) return;
+      const norm = (p2) => String(p2).replace(/[\\/]+/g, '\\').replace(/[\\/]+$/, '').toLowerCase();
+      const destN = norm(target.path);
+      let failed = 0, moved = 0;
+      for (const src of realPaths) {
+        const srcN = norm(src);
+        if (srcN === destN) continue; // 放回原位 = 取消
+        if (srcN && destN.startsWith(srcN + '\\')) { failed++; continue; } // 文件夹移入自身内部
+        const r = await window.api.files.move(src, target.path);
+        r.success ? moved++ : failed++;
+      }
+      els.fileList.querySelectorAll('.file-item.drop-target').forEach(x => x.classList.remove('drop-target'));
+      await refreshCurrent();
+      if (failed) await showInfoDialog('部分移动失败', failed + ' 个文件未能移动。');
+      return;
+    }
+    els.fileList.querySelectorAll('.file-item.drop-target').forEach(x => x.classList.remove('drop-target'));
+  }
+
+  // 资源管理器式移动：修改模式下，把文件直接拖放到某个文件夹项上 = 移入该文件夹
+  if (state.folderOpMode === 'modify' && (state.folderMode || isActiveReferenceDock())) {
+    const dropEl = document.elementFromPoint(e.clientX, e.clientY);
+    const itemEl = dropEl && dropEl.closest ? dropEl.closest('.file-item') : null;
+    const target = itemEl && state.files.find(f => f.path === itemEl.dataset.path);
+    if (target && target.isDirectory) {
+      if (!await ensureModifyConfirmed()) return;
+      const norm = (p2) => String(p2).replace(/[\\/]+/g, '\\').replace(/[\\/]+$/, '').toLowerCase();
+      const destN = norm(target.path);
+      let failed = 0, moved = 0;
+      for (const src of realPaths) {
+        const srcN = norm(src);
+        if (srcN === destN) continue; // 放回原位 = 取消
+        if (srcN && destN.startsWith(srcN + '\\')) { failed++; continue; } // 文件夹移入自身内部
+        const r = await window.api.files.move(src, target.path);
+        r.success ? moved++ : failed++;
+      }
+      els.fileList.querySelectorAll('.file-item.drop-target').forEach(x => x.classList.remove('drop-target'));
+      await refreshCurrent();
+      if (failed) await showInfoDialog('部分移动失败', failed + ' 个文件未能移动。');
+      return;
+    }
+    els.fileList.querySelectorAll('.file-item.drop-target').forEach(x => x.classList.remove('drop-target'));
+  }
+
+  // 区分真实文件与“虚拟文件”（zip 压缩包内、邮件附件等：没有真实路径，只有内容）
+  const realPaths = [];
+  const virtualFiles = [];
+  for (const f of files) {
+    if (f.path) realPaths.push(f.path);
+    else virtualFiles.push(f);
+  }
+  // 安全模式 + 有绑定文件夹的上下文：虚拟文件必须落盘才能收纳，与安全模式语义冲突，直接提示
+  if (virtualFiles.length && (state.folderMode || isActiveReferenceDock()) && state.folderOpMode !== 'modify') {
+    await showInfoDialog('安全模式提示', '拖入的文件来自压缩包内（或虚拟来源），没有真实路径，安全模式下无法收纳。请切换到修改模式后再拖入。');
+    return;
+  }
 
   if (state.folderMode && state.folderOpMode === 'modify') {
     // 修改模式文件夹层：真实移动/复制文件到当前文件夹
     if (!await ensureModifyConfirmed()) return;
     const currentFolder = state.folderStack[state.folderStack.length - 1];
     if (!currentFolder) return;
-    for (const p of paths) {
+    for (const p of realPaths) {
       // 默认移动（左键拖入）
       const result = await window.api.files.move(p, currentFolder.path);
       if (!result.success) {
         console.error('移动失败:', result.error);
       }
     }
+    // 压缩包内文件：由渲染层读出内容，直接写入当前文件夹
+    for (const f of virtualFiles) {
+      await materializeDroppedFile(f, currentFolder.path);
+    }
     // 刷新当前文件夹
     const result = await window.api.folder.list(currentFolder.path);
     if (result.success) {
       state.files = result.files;
       applySort();
+      await refreshPoolIfSearching();
       renderFiles();
     }
   } else if (state.folderMode && state.folderOpMode === 'safe') {
-    // 安全模式文件夹层：临时显示，标记为临时
-    const fileInfos = await window.api.files.getInfo(paths);
-    for (const info of fileInfos) {
-      if (!state.files.find(f => f.path === info.path)) {
-        state.files.push(info);
-        state.temporaryPaths.add(info.path);
-      }
-    }
+    // 安全模式文件夹层：临时显示，标记为临时（虚拟文件已在上方提示并返回）
+    await addRealEntries(realPaths, true);
     applySort();
     renderFiles();
   } else if (isActiveReferenceDock()) {
@@ -1504,37 +2137,62 @@ async function handleDrop(e) {
     //         修改模式真实移动到绑定文件夹
     if (state.folderOpMode !== 'modify') {
       // 安全模式：临时加入列表并标记，不写入绑定文件夹
-      const fileInfos = await window.api.files.getInfo(paths);
-      for (const info of fileInfos) {
-        if (!state.files.find(f => f.path === info.path)) {
-          state.files.push(info);
-          state.temporaryPaths.add(info.path);
-        }
-      }
+      await addRealEntries(realPaths, true);
       applySort();
       renderFiles();
       return;
     }
     const targetFolder = state.activePreset.folderPath;
-    for (const p of paths) {
+    for (const p of realPaths) {
       const result = await window.api.files.move(p, targetFolder);
       if (!result.success) {
         console.error('移动失败:', result.error);
       }
     }
+    for (const f of virtualFiles) {
+      await materializeDroppedFile(f, targetFolder);
+    }
     await refreshReferenceDock();
     renderFiles();
   } else {
-    // 临时仓：添加文件引用到列表
-    const fileInfos = await window.api.files.getInfo(paths);
-    for (const info of fileInfos) {
-      if (!state.files.find(f => f.path === info.path)) {
-        state.files.push(info);
-      }
+    // 临时仓：添加文件引用到列表；压缩包内文件落到配置目录 drop-inbox 后引用
+    await addRealEntries(realPaths, false);
+    for (const f of virtualFiles) {
+      const saved = await materializeDroppedFile(f, null);
+      if (saved) await addRealEntries([saved], false);
     }
     applySort();
     renderFiles();
     saveCurrentPreset();
+  }
+}
+
+// 把真实路径的文件加入列表；markTemp=true 时同时标记为临时（安全模式）
+async function addRealEntries(paths, markTemp) {
+  if (!paths || paths.length === 0) return;
+  const fileInfos = await window.api.files.getInfo(paths);
+  for (const info of fileInfos) {
+    if (!state.files.find(f => f.path === info.path)) {
+      state.files.push(info);
+      if (markTemp) state.temporaryPaths.add(info.path);
+    }
+  }
+}
+
+// 虚拟文件（zip 内/邮件附件等）落盘：destDir 为空时写入配置目录的 drop-inbox/
+async function materializeDroppedFile(file, destDir) {
+  try {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    const r = await window.api.files.saveDropped(file.name || '未命名', bytes, destDir || null);
+    if (!r.success) {
+      console.error('虚拟文件落盘失败:', r.error);
+      await showInfoDialog('收纳失败', '压缩包内文件写入失败：' + (r.error || '未知错误'));
+      return null;
+    }
+    return r.path;
+  } catch (err) {
+    console.error('虚拟文件读取失败:', err);
+    return null;
   }
 }
 
@@ -1597,6 +2255,7 @@ async function deleteFileFromDisk(filePath, fileName) {
       if (result.success) {
         state.files = result.files;
         applySort();
+        await refreshPoolIfSearching();
         renderFiles();
       }
     }
@@ -1611,8 +2270,7 @@ function showContextMenu(x, y, file, index) {
   // 显示前刷新菜单项可见性（确保安全模式下隐藏"从磁盘删除"/"重命名"）
   updateActionsForDockType();
   els.contextMenu.classList.remove('hidden');
-  els.contextMenu.style.left = `${x}px`;
-  els.contextMenu.style.top = `${y}px`;
+  clampPopup(els.contextMenu, x, y);
 }
 
 function hideContextMenu() {
@@ -1647,8 +2305,7 @@ function showEmptyContextMenu(x, y) {
   const visibleItems = els.emptyContextMenu.querySelectorAll('.menu-item:not([style*="display: none"])');
   if (visibleItems.length === 0) return;
   els.emptyContextMenu.classList.remove('hidden');
-  els.emptyContextMenu.style.left = `${x}px`;
-  els.emptyContextMenu.style.top = `${y}px`;
+  clampPopup(els.emptyContextMenu, x, y);
 }
 
 function hideEmptyContextMenu() {
@@ -1723,6 +2380,7 @@ async function refreshCurrent() {
       state.files = result.files;
       state.temporaryPaths.clear();
       applySort();
+      await refreshPoolIfSearching();
       renderFiles();
     } else {
       await showInfoDialog('刷新失败', result.error || '未知错误');
@@ -1757,6 +2415,25 @@ async function openCurrentInExplorer() {
   }
 }
 
+// 复制文件绝对路径到剪贴板
+async function copyFilePath(file) {
+  if (!file.path) {
+    await showInfoDialog('无法复制', '该文件来自压缩包等虚拟来源，没有真实路径。');
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(file.path);
+  } catch (e) {
+    const ta = document.createElement('textarea');
+    ta.value = file.path;
+    ta.style.cssText = 'position:fixed;opacity:0;';
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand('copy'); } catch (e2) {}
+    document.body.removeChild(ta);
+  }
+}
+
 function handleContextAction(action) {
   const ctx = state.contextMenuFile;
   if (!ctx) return;
@@ -1767,6 +2444,9 @@ function handleContextAction(action) {
       break;
     case 'openFolder':
       window.api.files.showInFolder(file.path);
+      break;
+    case 'copyPath':
+      copyFilePath(file);
       break;
     case 'rename':
       renameFile(file);
@@ -1842,6 +2522,9 @@ function loadSettingsUI() {
   // 触点颜色：空值时显示主题默认色（与强调色一致）
   $('#setting-triggerColor').value = s.triggerColor || defaultAccent;
   $('#setting-triggerAction').value = s.triggerAction;
+  $('#setting-previewTrigger').value = s.previewTrigger || 'ctrl';
+  $('#setting-pinShowName').checked = !!s.pinShowName;
+  renderHotkeyUI();
   $('#setting-hideDelay').value = s.hideDelay;
   $('#hideDelay-value').textContent = formatMs(s.hideDelay);
   $('#setting-alwaysOnTop').checked = s.alwaysOnTop;
@@ -1985,6 +2668,38 @@ async function updateSetting(key, value) {
   }
 }
 
+// 取色器拖动、滑块拖动会以每秒几十次的频率触发 input 事件，而每次 updateSetting 都是一次
+// 「同步重写配置文件 + 向所有窗口广播 + 主题重应用（含文件列表整表重渲染）」。
+// 这里按 key 做节流：首次立即生效保证跟手，之后的连续变化合并到 100ms 后补一次。
+const SETTING_THROTTLE_MS = 100;
+const settingThrottle = new Map();
+
+function updateSettingThrottled(key, value) {
+  let st = settingThrottle.get(key);
+  if (!st) {
+    st = { lastRun: 0, timer: null, pending: undefined, hasPending: false };
+    settingThrottle.set(key, st);
+  }
+  st.pending = value;
+  st.hasPending = true;
+
+  const since = Date.now() - st.lastRun;
+  if (since >= SETTING_THROTTLE_MS) {
+    st.lastRun = Date.now();
+    st.hasPending = false;
+    updateSetting(key, st.pending);
+    return;
+  }
+  if (st.timer) return;
+  st.timer = setTimeout(() => {
+    st.timer = null;
+    if (!st.hasPending) return;
+    st.hasPending = false;
+    st.lastRun = Date.now();
+    updateSetting(key, st.pending);
+  }, SETTING_THROTTLE_MS - since);
+}
+
 // ===== 预设面板 =====
 async function openPresetPanel() {
   closeAllPanels();
@@ -2017,8 +2732,8 @@ async function renderPresetList() {
     item.className = 'preset-item' + (preset.id === activeId ? ' active' : '');
     item.innerHTML = `
       <div style="flex:1;min-width:0;">
-        <div class="preset-name">${preset.name} <span class="preset-type-tag">${typeLabel}</span></div>
-        <div class="preset-info" title="${(preset.folderPath || '').replace(/"/g, '&quot;')}">${infoText}</div>
+        <div class="preset-name">${escHtml(preset.name)} <span class="preset-type-tag">${typeLabel}</span></div>
+        <div class="preset-info" title="${escHtml(preset.folderPath || '')}">${escHtml(infoText)}</div>
       </div>
       <div class="preset-actions">
         <button class="icon-btn small preset-rename" title="重命名">
@@ -2239,6 +2954,7 @@ function updateHideButton() {
 }
 
 async function quickHide() {
+  hideFilePreview();
   await window.api.snap.collapse();
 }
 
@@ -2316,14 +3032,29 @@ let boxSelectPending = false;   // 已在空白处按下左键，等待移动阈
 let boxSelectStarted = false;    // 已实际开始拖动框选（创建了选框）
 let boxSelectJustEnded = false;
 let editDragJustEnded = false;
+let boxSelectButton = 0;         // 0=左键（替换式框选） 2=右键（叠加式连续选择）
+let rightBoxBase = null;         // 右键框选开始时的既有选择（叠加基线）
+let rightBoxDragged = false;     // 本次右键框选确实拖动过（用于抑制右键菜单）
+let suppressCtxMenu = false;
 
 function setupBoxSelection() {
   els.fileArea.addEventListener('mousedown', (e) => {
-    if (e.button !== 0) return; // 只响应左键
-    if (state.files.length === 0) return; // 无文件不框选
-    // 在文件项上按下时不启动框选（让文件拖出/点击工作）
+    if (getVisiblePool().length === 0) return; // 无文件不框选
+    // 编辑模式的右键拖动：从哪儿起手都行（包括文件项上）——扫选时最自然的起手位置
+    // 就在某个文件上，早先只允许空白处起手，导致这个功能"看起来没做"
+    if (e.button === 2 && state.editMode) {
+      boxSelectButton = 2;
+      rightBoxBase = new Set(state.selectedPaths);
+      rightBoxDragged = false;
+      boxStartPos = { x: e.clientX, y: e.clientY };
+      boxSelectPending = true;
+      boxSelectStarted = false;
+      return;
+    }
+    // 左键：在文件项上按下时不启动框选（让文件拖出/点击工作）
     if (e.target.closest('.file-item')) return;
-
+    if (e.button !== 0) return;
+    boxSelectButton = 0;
     boxStartPos = { x: e.clientX, y: e.clientY };
     boxSelectPending = true;
     boxSelectStarted = false;
@@ -2346,17 +3077,23 @@ function setupBoxSelection() {
     }
   });
 
-  document.addEventListener('mouseup', () => {
+  document.addEventListener('mouseup', (e) => {
     if (boxSelectStarted) {
       // 只有真正拖动了框选才结束框选
       endBoxSelection();
       boxSelectJustEnded = true;
       setTimeout(() => { boxSelectJustEnded = false; }, 50);
+      if (boxSelectButton === 2 && rightBoxDragged) {
+        // 右键拖动结束：吞掉随后触发的右键菜单
+        suppressCtxMenu = true;
+      }
     }
     // 单击（未拖动）不进入编辑模式，直接清理
     boxSelectPending = false;
     boxSelectStarted = false;
     state.boxSelecting = false;
+    boxSelectButton = 0;
+    rightBoxBase = null;
   });
 
   // 编辑模式下双击空白处退出编辑
@@ -2369,7 +3106,7 @@ function setupBoxSelection() {
 }
 
 function startBoxSelection(pos) {
-  // 如果不在编辑模式，自动切换到编辑模式
+  // 如果不在编辑模式，自动切换到编辑模式（右键框选只在编辑模式内启动，不会走到这里）
   if (!state.editMode) {
     state.editMode = true;
     state.selectedPaths.clear();
@@ -2377,8 +3114,8 @@ function startBoxSelection(pos) {
     els.editBar.classList.remove('hidden');
     els.app.classList.add('edit-mode');
     renderFiles();
-  } else {
-    // 已在编辑模式，清空之前的选择
+  } else if (boxSelectButton !== 2) {
+    // 左键框选：清空之前的选择重新框；右键框选为叠加模式，保留既有选择
     state.selectedPaths.clear();
     renderFiles();
   }
@@ -2412,19 +3149,24 @@ function updateBoxSelection(clientX, clientY) {
   const rect = { left, top, right: left + width, bottom: top + height };
   const items = els.fileList.querySelectorAll('.file-item');
 
-  state.selectedPaths.clear();
+  // 左键框选 = 替换式（先清空）；右键框选 = 叠加式（在既有选择上连续累选，
+  // 扫出选框的项保持选中，可以多扫几把凑齐一批）
+  if (boxSelectButton !== 2) state.selectedPaths.clear();
   items.forEach(item => {
     const itemRect = item.getBoundingClientRect();
+    const path = item.dataset.path;
     if (rectIntersect(rect, itemRect)) {
-      const path = item.dataset.path;
       if (path) {
         state.selectedPaths.add(path);
         setItemChecked(item, true);
+        if (boxSelectButton === 2) rightBoxDragged = true;
       } else {
         setItemChecked(item, false);
       }
-    } else {
+    } else if (boxSelectButton !== 2 || !rightBoxBase || !rightBoxBase.has(path)) {
       setItemChecked(item, false);
+    } else {
+      setItemChecked(item, true); // 叠加基线里已选中的项保持勾选显示
     }
   });
 }
@@ -2479,6 +3221,70 @@ function bindEvents() {
       e.stopPropagation();
       switchFilterMode(btn.dataset.filtermode);
     });
+  });
+
+  // 全选/全不选 切换条
+  if (els.filterToggleAll) {
+    els.filterToggleAll.addEventListener('click', (e) => {
+      e.stopPropagation();
+      toggleFilterAll();
+    });
+  }
+
+  // —— 快捷方式：手势切仓 + 钉住按键 ——
+  let lastGestureSwitch = 0;
+  // 部分环境的 wheel 事件 buttons 位不含侧键，需单独按下/松开跟踪
+  let x1Down = false, x2Down = false;
+  window.addEventListener('mousedown', (e) => { if (e.button === 3) x1Down = true; if (e.button === 4) x2Down = true; });
+  window.addEventListener('mouseup', (e) => { if (e.button === 3) x1Down = false; if (e.button === 4) x2Down = false; });
+  window.addEventListener('blur', () => { x1Down = false; x2Down = false; });
+window.addEventListener('wheel', (e) => {
+    if (els.app.classList.contains('panel-open')) return;
+    const gesture = state.settings && state.settings.hotkeys ? state.settings.hotkeys.dockSwitchGesture : 'xbutton2+wheel';
+    if (!gesture || gesture === 'none') return;
+    const mask = gesture === 'xbutton1+wheel' ? 8 : 16;
+    const held = mask === 8 ? x1Down : x2Down;
+    if (!(e.buttons & mask) && !held) return;
+    e.preventDefault();
+    const now = Date.now();
+    if (now - lastGestureSwitch < 140 || Math.abs(e.deltaY) < 4) return;
+    lastGestureSwitch = now;
+    switchDockByOffset(e.deltaY > 0 ? 1 : -1);
+  }, { passive: false });
+
+  // 编辑模式搜索：与筛选规则联动；scope 按钮切换 当前级/含子目录
+  let searchDebounce = null;
+  els.searchInput.addEventListener('input', () => {
+    clearTimeout(searchDebounce);
+    searchDebounce = setTimeout(() => {
+      state.searchQuery = els.searchInput.value;
+      if (isSearchActive() && searchRecursiveEffective()) {
+        refreshSearchResults();
+      } else {
+        renderFiles();
+      }
+    }, 150);
+  });
+  els.searchInput.addEventListener('keydown', (e) => {
+    e.stopPropagation(); // 输入时不触发全局快捷键（←/→ 切仓、L 钉住等）
+    if (e.key === 'Escape') {
+      els.searchInput.value = '';
+      state.searchQuery = '';
+      state.searchResults = null;
+      renderFiles();
+    }
+  });
+  els.searchScopeBtn.addEventListener('click', () => {
+    state.searchRecursive = !state.searchRecursive;
+    updateSearchScopeBtn();
+    if (isSearchActive()) {
+      if (searchRecursiveEffective()) {
+        refreshSearchResults();
+      } else {
+        state.searchResults = null;
+        renderFiles();
+      }
+    }
   });
 
   // Pin
@@ -2593,6 +3399,45 @@ function bindEvents() {
       }
     });
   }
+  // 把拖入的第一项填进“新建引用仓”表单：文件夹 → 填路径（名称空则自动取名），文件 → 提示
+  async function fillDockPathFromDrop(dataTransfer) {
+    const files = dataTransfer && dataTransfer.files;
+    if (!files || files.length === 0) return false;
+    // 通过 file.path 获取真实路径（Electron 暴露）
+    const filePath = files[0].path;
+    if (!filePath) return false;
+    // 判断拖入的是文件夹还是文件：用 folder.list 探测，成功=文件夹
+    const probe = await window.api.folder.list(filePath);
+    if (!probe.success) {
+      alert('请拖入文件夹，而不是文件。\n此功能获取的是文件夹本身的路径和名称。');
+      return false;
+    }
+    $('#new-dock-path').value = filePath;
+    // 名称空时自动填入文件夹名
+    const nameInput = $('#new-preset-name');
+    if (nameInput && !nameInput.value.trim()) {
+      const parts = filePath.split(/[\\/]+/).filter(Boolean);
+      nameInput.value = parts[parts.length - 1] || '';
+    }
+    return true;
+  }
+
+  // 整个“文件仓管理”面板都接受拖入文件夹取路径，不只虚线框那一片——
+  // 拖到“文件夹路径”输入框等位置同样生效（此前会触发 Electron 默认行为弹出怪窗口）
+  els.presetPanel.addEventListener('dragover', (e) => {
+    if (!e.dataTransfer) return;
+    e.preventDefault();
+    els.presetPanel.classList.add('drag-over');
+  });
+  els.presetPanel.addEventListener('dragleave', (e) => {
+    if (e.target === els.presetPanel) els.presetPanel.classList.remove('drag-over');
+  });
+  els.presetPanel.addEventListener('drop', async (e) => {
+    e.preventDefault();
+    els.presetPanel.classList.remove('drag-over');
+    await fillDockPathFromDrop(e.dataTransfer);
+  });
+
   // 拖入文件到虚线框：获取所在文件夹路径填入
   if (dockDropZone) {
     dockDropZone.addEventListener('dragover', (e) => {
@@ -2607,27 +3452,7 @@ function bindEvents() {
       e.preventDefault();
       e.stopPropagation();
       dockDropZone.classList.remove('drag-over');
-      const files = e.dataTransfer && e.dataTransfer.files;
-      if (!files || files.length === 0) return;
-      const firstFile = files[0];
-      // 通过 file.path 获取真实路径（Electron 暴露）
-      const filePath = firstFile.path;
-      if (!filePath) return;
-      // 判断拖入的是文件夹还是文件：用 folder.list 探测，成功=文件夹
-      const probe = await window.api.folder.list(filePath);
-      if (!probe.success) {
-        alert('请拖入文件夹，而不是文件。\n此功能获取的是文件夹本身的路径和名称。');
-        return;
-      }
-      // 是文件夹：直接用文件夹路径填入
-      $('#new-dock-path').value = filePath;
-      // 名称空时自动填入文件夹名
-      const nameInput = $('#new-preset-name');
-      if (nameInput && !nameInput.value.trim()) {
-        const sep = filePath.includes('\\') ? '\\' : '/';
-        const parts = filePath.split(sep).filter(Boolean);
-        nameInput.value = parts[parts.length - 1] || '';
-      }
+      await fillDockPathFromDrop(e.dataTransfer);
     });
   }
   // 清空按钮：清空名称和文件夹路径，方便填错时重填
@@ -2695,6 +3520,12 @@ function bindEvents() {
 
   // 右键事件：文件项走文件菜单（item 自身监听），空白处走空白菜单
   document.addEventListener('contextmenu', (e) => {
+    // 右键框选刚结束：吞掉这次右键菜单
+    if (suppressCtxMenu) {
+      suppressCtxMenu = false;
+      e.preventDefault();
+      return;
+    }
     // 文件项：item 自身监听器已 preventDefault + showContextMenu，这里不再处理
     if (e.target.closest('.file-item')) return;
     // 仅在文件区域（含空状态）内弹出空白右键菜单
@@ -2708,7 +3539,7 @@ function bindEvents() {
   // 设置项变更
   $('#setting-theme').addEventListener('change', (e) => updateSetting('theme', e.target.value));
   $('#setting-themeMode').addEventListener('change', (e) => updateSetting('themeMode', e.target.value));
-  $('#setting-accentColor').addEventListener('input', (e) => updateSetting('accentColor', e.target.value));
+  $('#setting-accentColor').addEventListener('input', (e) => updateSettingThrottled('accentColor', e.target.value));
   $('#reset-accentColor').addEventListener('click', () => {
     updateSetting('accentColor', '');
     // 同步显示主题默认色
@@ -2722,7 +3553,7 @@ function bindEvents() {
   $('#setting-snapEnabled').addEventListener('change', (e) => updateSetting('snapEnabled', e.target.checked));
   $('#setting-autoHideOnSnap').addEventListener('change', (e) => updateSetting('autoHideOnSnap', e.target.checked));
   $('#setting-triggerSize').addEventListener('change', (e) => updateSetting('triggerSize', e.target.value));
-  $('#setting-triggerColor').addEventListener('input', (e) => updateSetting('triggerColor', e.target.value));
+  $('#setting-triggerColor').addEventListener('input', (e) => updateSettingThrottled('triggerColor', e.target.value));
   $('#reset-triggerColor').addEventListener('click', () => {
     updateSetting('triggerColor', '');
     // 同步显示主题默认色（与强调色的"主题默认"逻辑一致）
@@ -2732,9 +3563,40 @@ function bindEvents() {
     $('#setting-triggerColor').value = defaultAccent;
   });
   $('#setting-triggerAction').addEventListener('change', (e) => updateSetting('triggerAction', e.target.value));
+  $('#setting-previewTrigger').addEventListener('change', (e) => updateSetting('previewTrigger', e.target.value));
+  $('#setting-pinShowName').addEventListener('change', (e) => updateSetting('pinShowName', e.target.checked));
+
+  // —— 快捷方式设置区 ——
+  renderHotkeyUI();
+  const hkGesture = document.getElementById('setting-hk-gesture');
+  if (hkGesture) {
+    hkGesture.addEventListener('change', (e) => {
+      const hk = Object.assign({}, state.settings.hotkeys || {});
+      hk.dockSwitchGesture = e.target.value;
+      updateSetting('hotkeys', hk);
+    });
+  }
+  document.querySelectorAll('.hotkey-reset').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const hk = Object.assign({}, state.settings.hotkeys || {});
+      hk[btn.dataset.hk] = btn.dataset.hk === 'dockSwitchGesture' ? 'xbutton2+wheel' : 'l';
+      state.settings = await window.api.settings.update({ hotkeys: hk });
+      renderHotkeyUI();
+    });
+  });
+  const resetAll = document.getElementById('hotkey-reset-all');
+  if (resetAll) {
+    resetAll.addEventListener('click', async () => {
+      const r = await showConfirmDialog({ title: '重置快捷方式', message: '所有快捷方式将恢复为默认值，确定继续吗？', checkboxLabel: '' });
+      if (!r.confirmed) return;
+      state.settings = await window.api.settings.update({ hotkeys: { dockSwitchGesture: 'xbutton2+wheel', pinKey: 'l' } });
+      renderHotkeyUI();
+    });
+  }
   $('#setting-hideDelay').addEventListener('input', (e) => {
     $('#hideDelay-value').textContent = formatMs(parseInt(e.target.value));
-    updateSetting('hideDelay', parseInt(e.target.value));
+    updateSettingThrottled('hideDelay', parseInt(e.target.value));
   });
   $('#setting-alwaysOnTop').addEventListener('change', (e) => updateSetting('alwaysOnTop', e.target.checked));
   $('#setting-closeToTray').addEventListener('change', (e) => updateSetting('closeToTray', e.target.checked));
@@ -2763,8 +3625,74 @@ function bindEvents() {
     }
   });
   els.app.addEventListener('mouseleave', () => {
-    window.api.window.mouseLeave();
+    hideFilePreview();
+    // 命名框/输入框/面板/对话框使用中时不自动收起——否则打字打到一半
+    // 整个仓会缩回边缘
+    if (uiBusy()) {
+      window.api.window.mouseEnter(); // 取消可能已挂起的自动隐藏计时
+    } else {
+      window.api.window.mouseLeave();
+    }
   });
+  // 输入框获得焦点同样取消挂起的自动隐藏（光标先前已离开窗口的情况）
+  document.addEventListener('focusin', (e) => {
+    const tag = e.target && e.target.tagName ? e.target.tagName.toLowerCase() : '';
+    if (tag === 'input' || tag === 'textarea' || tag === 'select') window.api.window.mouseEnter();
+  });
+
+  // 松开 Ctrl 收起预览（仅 Ctrl 触发模式；悬停模式由 mouseleave 收起）
+  document.addEventListener('keyup', (e) => {
+    if (e.key === 'Control' && (!state.settings || state.settings.previewTrigger !== 'hover')) hideFilePreview();
+  });
+  window.addEventListener('blur', hideFilePreview);
+  // 任何鼠标按下（含右键）都收起预览：预览是悬停态辅助，一旦开始交互就退场
+  document.addEventListener('mousedown', hideFilePreview);
+  // 记录光标位置：Ctrl 静止按下时要用 elementFromPoint 找光标下的文件
+  document.addEventListener('mousemove', (e) => {
+    lastMousePos.x = e.clientX;
+    lastMousePos.y = e.clientY;
+  }, true);
+  // 快捷键录制：capture 相捕获，避免录制按键触发应用其它行为
+  document.addEventListener('keydown', (e) => {
+    if (!hkRecording) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.key === 'Escape') { stopHotkeyRecord(null); return; }
+    const k = e.key.length === 1 ? e.key.toLowerCase() : e.key.toLowerCase();
+    if (!/^[a-z0-9]$/.test(k) && !/^f\d+$/.test(k) && !['arrowup', 'arrowdown', 'arrowleft', 'arrowright'].includes(k)) return;
+    const mods = [];
+    if (e.ctrlKey) mods.push('ctrl');
+    if (e.altKey) mods.push('alt');
+    if (e.shiftKey) mods.push('shift');
+    stopHotkeyRecord(mods.concat([k]).join('+'));
+  }, true);
+  // Ctrl / L 热键：原生轮询（不依赖焦点，主路径）+ 页面 keydown（无原生模块时兜底）
+  if (window.api.hotkeys) {
+    window.api.hotkeys.onCtrl(() => showPreviewUnderCursor());
+    // 松开 Ctrl 即收起悬浮（悬浮的前提 = 按住 Ctrl + 位置正确）；悬停模式不适用
+    window.api.hotkeys.onCtrlUp(() => {
+      if (!state.settings || state.settings.previewTrigger !== 'hover') hideFilePreview();
+    });
+    window.api.hotkeys.onL(() => tryPinPreview());
+  }
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Control' && !e.repeat) showPreviewUnderCursor();
+  });
+  // 按 L 钉住当前预览 → 独立小窗（可拖动 / 等比缩放 / × 关闭）；可连按钉住多个
+  document.addEventListener('keydown', (e) => {
+    const tag = (e.target && e.target.tagName) ? e.target.tagName.toLowerCase() : '';
+    if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
+    if (pinKeyMatches(e)) {
+      e.preventDefault();
+      tryPinPreview();
+    }
+  });
+
+  // 全局兜底：Electron 默认会把拖入窗口的文件当页面导航打开（表现为弹出奇怪的窗口）。
+  // 具体区域（文件区/引用仓路径/管理面板）各自的 drop 处理器已 preventDefault，
+  // 这里拦下其余所有位置的默认行为。
+  document.addEventListener('dragover', (e) => e.preventDefault());
+  document.addEventListener('drop', (e) => e.preventDefault());
 
   // 顶栏拖动排序
   setupToolbarDragSort();

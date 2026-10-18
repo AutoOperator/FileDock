@@ -4,27 +4,26 @@ const { app } = require('electron');
 const path = require('path');
 const fs = require('fs');
 
-// 检测是否为便携模式（绿色版）
+// 检测是否为打包版（绿色文件夹版）
 // - asar 打包：app.isPackaged === true
-// - 目录打包（resources/app/）：app.isPackaged === false，但 __dirname 包含 resources/app
+// - 非asar目录打包（resources/app/）：app.isPackaged === false，但 __dirname 包含 resources/app
 // - exe 同级存在 config 目录：用户手动放置的绿色版
 function isPortableMode() {
   if (app.isPackaged) return true;
   const normalized = __dirname.replace(/\\/g, '/');
   if (normalized.includes('/resources/app/')) return true;
-  // 绿色文件夹版：exe 同级有 config 目录则按便携模式处理
   const exeDir = path.dirname(app.getPath('exe'));
   return fs.existsSync(path.join(exeDir, 'config'));
 }
 
 // 获取配置文件目录
-// 绿色版：配置跟 exe 走，放在 exe 同目录的 config 文件夹
-// 开发版：使用默认的 userData 目录
+// 绿色版：配置跟文件夹走，放在根目录的 config 文件夹。
+// 根目录 FileDock.exe 是启动器（见 tools/launcher/launch.c）：它把自身目录设为
+// PORTABLE_EXECUTABLE_DIR 再启动 app\FileDock.exe，因此这里的 exe 目录其实是
+// app/ 子目录——必须优先认启动器标记，配置才能落在用户看得见的根目录。
 function getConfigDir() {
   if (isPortableMode()) {
-    // electron-builder portable 运行时会设置 PORTABLE_EXECUTABLE_DIR
-    const portableDir = process.env.PORTABLE_EXECUTABLE_DIR;
-    const baseDir = portableDir || path.dirname(app.getPath('exe'));
+    const baseDir = process.env.PORTABLE_EXECUTABLE_DIR || path.dirname(app.getPath('exe'));
     const configDir = path.join(baseDir, 'config');
     if (!fs.existsSync(configDir)) {
       fs.mkdirSync(configDir, { recursive: true });
@@ -63,6 +62,15 @@ const store = new Store({
       clipPaused: false,     // 是否暂停采集（隐私/暂不收纳）
       clipMaxItems: 200,     // 历史条数上限
       clipSkipShort: 5,      // 纯短文本忽略长度（<此长度无图无富文本不收纳）
+      // 图片/视频预览触发方式：'ctrl' 按住 Ctrl 悬停（默认）| 'hover' 悬停即显
+      previewTrigger: 'ctrl',
+      // 钉住图/图片组下方显示文件名栏（黑底白字，与图片下边拼接）
+      pinShowName: false,
+      // 快捷方式（dockSwitchGesture：切仓鼠标手势；pinKey：钉住悬浮图的按键，支持 ctrl/alt/shift 组合）
+      hotkeys: {
+        dockSwitchGesture: 'xbutton2+wheel',
+        pinKey: 'l',
+      },
       // 顶栏按钮顺序（用户可自定义）
       toolbarOrder: ['settings', 'view', 'filter', 'sort', 'edit', 'pin', 'hide', 'close'],
       // 排序状态
@@ -171,6 +179,11 @@ function getSettings() {
   }
   if (!s.themeMode) {
     s.themeMode = 'day';
+    store.set('settings', s);
+  }
+  // 旧配置缺 hotkeys 字段：补默认值（electron-store 的 defaults 是浅合并）
+  if (!s.hotkeys) {
+    s.hotkeys = { dockSwitchGesture: 'xbutton2+wheel', pinKey: 'l' };
     store.set('settings', s);
   }
   return s;

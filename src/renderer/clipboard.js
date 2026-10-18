@@ -18,6 +18,7 @@
   let pausedState = false;
   let mode = 'all';         // 'all' 全部历史 | 'fav' 只看收藏
   let toastTimer = null;
+  let maxItems = 200;       // 条数上限（clip:state 下发，增量插入时裁 DOM 用）
   const DRAG_MOVE = 5;
   const selected = new Set();   // 多选（Ctrl+点击）的 id
   let itemCount = 0;            // 当前列表条数（HUD 用）
@@ -44,6 +45,19 @@
     if (s < 3600) return Math.floor(s / 60) + 'm';
     if (s < 86400) return Math.floor(s / 3600) + 'h';
     return Math.floor(s / 86400) + 'd';
+  }
+
+  // 展开的大图/缩略图接 Ctrl 悬停预览（与文件仓同一套窗口，按 L 同样可钉住）
+  function armClipPreview(img) {
+    if (!img || img.dataset.previewArmed) return;
+    img.dataset.previewArmed = '1';
+    img.addEventListener('mousemove', (e) => {
+      if (e.buttons) { window.__hideFilePreview && window.__hideFilePreview(); return; }
+      const needCtrl = window.__previewHoverWantsCtrl ? window.__previewHoverWantsCtrl() : true;
+      if (needCtrl && !e.ctrlKey) { window.__hideFilePreview && window.__hideFilePreview(); return; }
+      if (img.src && img.src.startsWith('data:')) window.__previewFromUrl(img.src);
+    });
+    img.addEventListener('mouseleave', () => { window.__hideFilePreview && window.__hideFilePreview(); });
   }
   function showToast(msg) {
     if (!els.toast) return;
@@ -144,13 +158,13 @@
       it.imgs.forEach((rel) => {
         api.imageAt(rel, 720).then((u) => {
           const im = card.querySelector('.clip-big[data-rel="' + rel + '"]');
-          if (im && u) im.src = u;
+          if (im && u) { im.src = u; armClipPreview(im); }
         });
       });
     } else {
       api.imageData(it.id, 760).then((u) => {
         const im = card.querySelector('.clip-big');
-        if (im && u) im.src = u;
+        if (im && u) { im.src = u; armClipPreview(im); }
       });
     }
   }
@@ -196,6 +210,7 @@
         img.dataset.rel = sg.v;
         img.alt = '';
         container.appendChild(img);
+        armClipPreview(img);
         api.imageAt(sg.v, 720).then((u) => { if (img && u && img.isConnected) img.src = u; });
       }
     });
@@ -332,6 +347,18 @@
 
     armDrag(d, it);
 
+    // 缩略图懒取：列表载荷不带 base64 图，建卡后按需向主进程要
+    if (it.hasImage) {
+      api.thumb(it.id).then((u) => {
+        if (!u) return;
+        const mediaEl = d.querySelector('.clip-media');
+        if (mediaEl) {
+          mediaEl.innerHTML = '<img class="clip-thumb" src="' + u + '" draggable="false" alt="">';
+          armClipPreview(mediaEl.querySelector('img'));
+        }
+      });
+    }
+
     d.addEventListener('contextmenu', (e) => {
       e.preventDefault(); e.stopPropagation();
       openMenu(e.clientX, e.clientY, it);
@@ -368,6 +395,7 @@
     try {
       const st = await api.state();
       pausedState = !!st.paused;
+      maxItems = st.max || 200;
       updatePauseBtn();
       let items = await api.list();
       if (mode === 'fav') items = items.filter(i => i.pinned);
@@ -412,6 +440,32 @@
     });
   }
 
-  window.__clipUI = { refresh, bind };
+  // 后台采到新内容：增量插入顶部，不打断正在进行的浏览（选中/展开/滚动位置都保留）。
+  // 之前每次采集都整表重建，选中集被清空、展开的卡片被合上——连续复制时列表肉眼可见地闪。
+  function onChanged(payload) {
+    if (payload && payload.added && mode === 'all' && !pausedState && els.list) {
+      hideMenu();
+      const card = makeCard(payload.added);
+      els.list.prepend(card);
+      (payload.evicted || []).forEach((id) => {
+        const old = els.list.querySelector('.clip-card[data-id="' + id + '"]');
+        if (old) old.remove();
+      });
+      // 上限兜底：主进程已淘汰，这里同步裁掉溢出的 DOM 卡片
+      while (els.list.children.length > maxItems) {
+        const last = els.list.lastElementChild;
+        if (!last) break;
+        last.remove();
+      }
+      itemCount = els.list.children.length;
+      // 顶部插入会把视口内容下推：用户正在看列表中部时补偿滚动位置，视野不动
+      if (els.list.scrollTop > 0) els.list.scrollTop += card.offsetHeight;
+      updateHud();
+      return;
+    }
+    refresh();
+  }
+
+  window.__clipUI = { refresh, bind, onChanged };
   bind();
 })();

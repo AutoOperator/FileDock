@@ -37,6 +37,11 @@ contextBridge.exposeInMainWorld('api', {
     delete: (paths) => ipcRenderer.invoke('file:delete', paths),
     move: (srcPath, destDir) => ipcRenderer.invoke('file:move', { srcPath, destDir }),
     copy: (srcPath, destDir) => ipcRenderer.invoke('file:copy', { srcPath, destDir }),
+    // 网格缩略图 / 系统关联图标
+    thumb: (path) => ipcRenderer.invoke('file:thumb', path),
+    fileIcon: (path) => ipcRenderer.invoke('file:icon', path),
+    // 虚拟文件（zip 内/邮件附件）落盘：destDir 空则进配置目录 drop-inbox/
+    saveDropped: (name, bytes, destDir) => ipcRenderer.invoke('file:saveDropped', { name, bytes, destDir }),
   },
 
   // 剪贴板仓
@@ -53,6 +58,7 @@ contextBridge.exposeInMainWorld('api', {
     materializeAll: (id) => ipcRenderer.invoke('clip:materializeAll', id),
     imageData: (id, maxW) => ipcRenderer.invoke('clip:imageData', id, maxW),
     imageAt: (rel, maxW) => ipcRenderer.invoke('clip:imageAt', rel, maxW),
+    thumb: (id) => ipcRenderer.invoke('clip:thumb', id),
     pause: (paused) => ipcRenderer.invoke('clip:pause', paused),
     state: () => ipcRenderer.invoke('clip:state'),
     onChanged: (callback) => {
@@ -65,7 +71,8 @@ contextBridge.exposeInMainWorld('api', {
   // 文件夹操作
   folder: {
     list: (dirPath) => ipcRenderer.invoke('folder:list', dirPath),
-    pick: () => ipcRenderer.invoke('folder:pick'),
+    listRecursive: (dirPath) => ipcRenderer.invoke('folder:listRecursive', dirPath),
+    pick: (defaultPath) => ipcRenderer.invoke('folder:pick', defaultPath),
     ensureDir: (dirPath) => ipcRenderer.invoke('folder:ensureDir', dirPath),
     createChild: (parentPath, name, isDir) => ipcRenderer.invoke('folder:createChild', { parentPath, name, isDir }),
     openInExplorer: (folderPath) => ipcRenderer.invoke('folder:openInExplorer', folderPath),
@@ -118,9 +125,35 @@ contextBridge.exposeInMainWorld('api', {
     getDisplay: () => ipcRenderer.invoke('screen:getDisplay'),
   },
 
+  // Ctrl+悬停 预览（大图 / 视频片段；按 L 钉住成独立小窗，可同时钉住多个）
+  preview: {
+    show: (payload) => ipcRenderer.invoke('preview:show', payload),
+    hide: () => ipcRenderer.invoke('preview:hide'),
+    pin: (payload) => ipcRenderer.invoke('preview:pin', payload),
+  },
+
   // 文本 OLE 拖出
   dnd: {
     startText: (id) => ipcRenderer.invoke('dnd:startText', id),
+  },
+
+  // 原生热键轮询（不依赖窗口焦点的 Ctrl/L 探测，作用于文件仓的悬浮预览）
+  hotkeys: {
+    onCtrl: (cb) => {
+      const handler = () => cb();
+      ipcRenderer.on('hotkey:ctrl', handler);
+      return () => ipcRenderer.removeListener('hotkey:ctrl', handler);
+    },
+    onCtrlUp: (cb) => {
+      const handler = () => cb();
+      ipcRenderer.on('hotkey:ctrl-up', handler);
+      return () => ipcRenderer.removeListener('hotkey:ctrl-up', handler);
+    },
+    onL: (cb) => {
+      const handler = () => cb();
+      ipcRenderer.on('hotkey:l', handler);
+      return () => ipcRenderer.removeListener('hotkey:l', handler);
+    },
   },
 
   // 图标管理

@@ -5,7 +5,8 @@ const fs = require('fs');
 
 const store = require('./store');
 const clipWatch = require('./clipboard-watcher');
-const dnd = require('./dnd');
+const media = require('./media');
+const preview = require('./preview');
 const nativeDrag = require('./native-drag');
 const dragSession = require('./drag-session');
 const fileOps = require('./file-ops');
@@ -43,6 +44,7 @@ function registerIpcHandlers() {
   ipcMain.handle('clip:imageData', (event, id, maxW) => clipWatch.imageDataUrl(id, maxW));
   ipcMain.handle('clip:imageAt', (event, rel, maxW) => clipWatch.imageDataRel(rel, maxW));
   ipcMain.handle('clip:materializeAll', (event, id) => clipWatch.materializeImages(id));
+  ipcMain.handle('clip:thumb', (event, id) => clipWatch.thumb(id));
 
   // 文本/图文拖出：拖拽会话（跟手拖影 + 松手贴进光标下窗口）。
   // 图文/富文本给“有序 HTML”（不附带单张 DIB），避免 QQ 只落图丢文；顺序由 html 的 <img> 次序保留。
@@ -136,38 +138,133 @@ function registerIpcHandlers() {
     return results;
   });
 
-  // 列出文件夹内容
-  ipcMain.handle('folder:list', (event, dirPath) => {
+  // 保存拖入的“虚拟文件”内容（zip 压缩包内、邮件附件等没有真实路径，渲染层读出字节）。
+  // destDir 为空时写入配置目录的 drop-inbox/（临时仓收纳用）。
+  ipcMain.handle('file:saveDropped', (event, { name, bytes, destDir }) => {
     try {
-      if (!fs.existsSync(dirPath) || !fs.statSync(dirPath).isDirectory()) {
+      if (!name || !bytes) return { success: false, error: '参数为空' };
+      let dest = destDir;
+      if (!dest) {
+        dest = path.join(store.getConfigDir(), 'drop-inbox');
+        if (!fs.existsSync(dest)) fs.mkdirSync(dest, { recursive: true });
+      }
+      if (!fs.existsSync(dest) || !fs.statSync(dest).isDirectory()) {
+        return { success: false, error: '目标文件夹不存在' };
+      }
+      let destPath = path.join(dest, path.basename(name));
+      const ext = path.extname(destPath);
+      const base = path.basename(destPath, ext);
+      let i = 1;
+      while (fs.existsSync(destPath)) {
+        destPath = path.join(dest, `${base} (${i})${ext}`);
+        i++;
+      }
+      fs.writeFileSync(destPath, Buffer.from(bytes));
+      return { success: true, path: destPath };
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // 列出文件夹内容（异步 stat：大目录不再逐项同步阻塞主进程）
+  ipcMain.handle('folder:list', async (event, dirPath) => {
+    try {
+      const st = await fs.promises.stat(dirPath);
+      if (!st.isDirectory()) {
         return { success: false, error: '路径不是文件夹或不存在' };
       }
-      const entries = fs.readdirSync(dirPath, { withFileTypes: true });
-      const files = entries.map(entry => {
+      const entries = await fs.promises.readdir(dirPath, { withFileTypes: true });
+      const files = await Promise.all(entries.map(async (entry) => {
         const fullPath = path.join(dirPath, entry.name);
-        const stat = fs.statSync(fullPath);
-        return {
-          path: fullPath,
-          name: entry.name,
-          ext: entry.isDirectory() ? '' : path.extname(entry.name).slice(1).toLowerCase(),
-          isDirectory: entry.isDirectory(),
-          size: stat.size,
-          mtime: stat.mtimeMs,
-        };
-      });
+        try {
+          const s = await fs.promises.stat(fullPath);
+          return {
+            path: fullPath,
+            name: entry.name,
+            ext: entry.isDirectory() ? '' : path.extname(entry.name).slice(1).toLowerCase(),
+            isDirectory: entry.isDirectory(),
+            size: s.size,
+            mtime: s.mtimeMs,
+          };
+        } catch (e) {
+          // 条目 stat 失败（权限/符号链接悬空）：保留条目但标记大小为 0，不让整目录列表失败
+          return {
+            path: fullPath,
+            name: entry.name,
+            ext: entry.isDirectory() ? '' : path.extname(entry.name).slice(1).toLowerCase(),
+            isDirectory: entry.isDirectory(),
+            size: 0,
+            mtime: 0,
+          };
+        }
+      }));
       return { success: true, files };
     } catch (err) {
       return { success: false, error: err.message };
     }
   });
 
+  // 递归列出文件夹及其所有子目录内容（搜索“含子目录”模式用）。
+  // 不跟随符号链接目录（Dirent.isDirectory 对 symlink 为 false），深度上限 10，条目上限 5000。
+  ipcMain.handle('folder:listRecursive', async (event, dirPath) => {
+    const out = [];
+    const MAX_DEPTH = 10;
+    const MAX_ITEMS = 5000;
+    async function walk(dir, depth) {
+      if (depth > MAX_DEPTH || out.length >= MAX_ITEMS) return;
+      let entries;
+      try {
+        entries = await fs.promises.readdir(dir, { withFileTypes: true });
+      } catch (e) {
+        return; // 无权限/已消失的子目录直接跳过
+      }
+      for (const entry of entries) {
+        if (out.length >= MAX_ITEMS) return;
+        const fullPath = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          out.push({
+            path: fullPath, name: entry.name, ext: '', isDirectory: true, size: 0, mtime: 0,
+          });
+          await walk(fullPath, depth + 1);
+        } else {
+          let size = 0, mtime = 0;
+          try {
+            const s = await fs.promises.stat(fullPath);
+            size = s.size; mtime = s.mtimeMs;
+          } catch (e) { /* 保留条目，统计置 0 */ }
+          out.push({
+            path: fullPath,
+            name: entry.name,
+            ext: path.extname(entry.name).slice(1).toLowerCase(),
+            isDirectory: false,
+            size, mtime,
+          });
+        }
+      }
+    }
+    try {
+      const st = await fs.promises.stat(dirPath);
+      if (!st.isDirectory()) return { success: false, error: '路径不是文件夹' };
+      await walk(dirPath, 0);
+      return { success: true, files: out };
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+  });
+
   // 选择文件夹（用于创建引用仓）
-  ipcMain.handle('folder:pick', async () => {
+  ipcMain.handle('folder:pick', async (event, defaultPath) => {
     const win = getMainWindow();
-    const result = await dialog.showOpenDialog(win, {
+    const opts = {
       title: '选择文件夹',
       properties: ['openDirectory', 'createDirectory'],
-    });
+    };
+    try {
+      if (defaultPath && fs.existsSync(defaultPath) && fs.statSync(defaultPath).isDirectory()) {
+        opts.defaultPath = defaultPath;
+      }
+    } catch (e) { /* 默认目录无效则忽略 */ }
+    const result = await dialog.showOpenDialog(win, opts);
     if (result.canceled || result.filePaths.length === 0) {
       return { success: false, canceled: true };
     }
@@ -261,7 +358,19 @@ function registerIpcHandlers() {
       if (!fs.existsSync(srcPath)) {
         return { success: false, error: '源文件不存在' };
       }
+      // 文件夹不能移入其自身内部
+      try {
+        const a = path.resolve(srcPath).toLowerCase();
+        const b = path.resolve(path.join(destDir, path.basename(srcPath))).toLowerCase();
+        if (fs.statSync(srcPath).isDirectory() && b.startsWith(a + path.sep)) {
+          return { success: false, error: '不能把文件夹移动到它自己的内部' };
+        }
+      } catch (e) { /* 非目录按普通文件处理 */ }
       const fileName = path.basename(srcPath);
+      // 拖出又放回原位 = 取消拖出，不做任何改名（此前会被重命名成 "xxx (1)"）
+      if (path.normalize(srcPath).toLowerCase() === path.normalize(path.join(destDir, fileName)).toLowerCase()) {
+        return { success: true, destPath: srcPath, noChange: true };
+      }
       const destPath = path.join(destDir, fileName);
       // 处理重名
       let finalPath = destPath;
@@ -303,6 +412,10 @@ function registerIpcHandlers() {
         return { success: false, error: '源文件不存在' };
       }
       const fileName = path.basename(srcPath);
+      // 复制到自身所在目录 = 无操作，避免自我覆盖
+      if (path.normalize(srcPath).toLowerCase() === path.normalize(path.join(destDir, fileName)).toLowerCase()) {
+        return { success: true, destPath: srcPath, noChange: true };
+      }
       let destPath = path.join(destDir, fileName);
       // 处理重名
       if (fs.existsSync(destPath)) {
@@ -340,6 +453,18 @@ function registerIpcHandlers() {
     }
     return true;
   });
+
+  // ===== 网格缩略图 / 系统图标 / 悬浮预览 =====
+  // 图片缩略图：主进程解码并按宽缩到 256px（异步读文件，不阻塞其它 IPC）
+  ipcMain.handle('file:thumb', (event, filePath) => media.thumb(filePath));
+  // 未知后缀 → Windows 关联应用的图标（按后缀缓存）
+  ipcMain.handle('file:icon', (event, filePath) => media.fileIcon(filePath));
+  // Ctrl+悬停 预览：大图（按比例适配）/ 视频片段（muted 循环播放）
+  ipcMain.handle('preview:show', (event, payload) => preview.show(payload || {}));
+  ipcMain.handle('preview:hide', () => preview.close());
+  // 钉住当前预览：升级为可拖动/等比缩放的独立小窗。
+  // payload.items（多选可预览文件 + index）存在时钉成“图片组”
+  ipcMain.handle('preview:pin', (event, payload) => preview.pin(payload || null));
 
   // ===== 窗口控制 =====
   ipcMain.handle('window:pin', (event, pinned) => {

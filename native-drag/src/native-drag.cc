@@ -370,6 +370,22 @@ static napi_value FgHwnd(napi_env env, napi_callback_info info) {
   napi_create_double(env, (double)(uintptr_t)h, &o);
   return o;
 }
+// virtual-key down state (GetAsyncKeyState, no window focus required):
+// hover-preview Ctrl trigger / L pin polling — page keydown needs focus,
+// which is unreliable right after launch and other moments
+static napi_value KeyDown(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value argv[1];
+  napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+  int vk = 0;
+  if (argc >= 1) {
+    napi_get_value_int32(env, argv[0], &vk);
+  }
+  bool down = (GetAsyncKeyState(vk) & 0x8000) != 0;
+  napi_value result;
+  napi_get_boolean(env, down, &result);
+  return result;
+}
 static napi_value Init(napi_env env, napi_value exports) {
   napi_value fn;
   napi_create_function(env, "startDrag", NAPI_AUTO_LENGTH, StartDrag, nullptr, &fn);
@@ -388,6 +404,8 @@ static napi_value Init(napi_env env, napi_value exports) {
   napi_set_named_property(env, exports, "sendPaste", fn);
   napi_create_function(env, "clipFiles", NAPI_AUTO_LENGTH, ClipFiles, nullptr, &fn);
   napi_set_named_property(env, exports, "clipFiles", fn);
+  napi_create_function(env, "keyDown", NAPI_AUTO_LENGTH, KeyDown, nullptr, &fn);
+  napi_set_named_property(env, exports, "keyDown", fn);
   return exports;
 }
 NAPI_MODULE(NODE_GYP_MODULE_NAME, Init)

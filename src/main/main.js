@@ -10,10 +10,11 @@ if (process.platform === 'linux' && process.getuid && process.getuid() === 0) {
 const { createMainWindow, getMainWindow, createTriggerWindow, applyAlwaysOnTop } = require('./window-manager');
 const { registerIpcHandlers } = require('./ipc-handlers');
 const { createTray, destroyTray } = require('./tray-manager');
+const preview = require('./preview');
 const store = require('./store');
 const snapManager = require('./snap-manager');
 const clipWatch = require('./clipboard-watcher');
-const dnd = require('./dnd');
+const nd = require('./native-drag');
 const fgTrack = require('./foreground');
 
 // 防止多实例
@@ -33,19 +34,53 @@ if (!gotTheLock) {
 
 let trayCreated = false;
 let isQuitting = false; // 标记是否正在退出应用
+let flushPendingBounds = null; // 由 whenReady 赋值：补写尚未落盘的窗口位置
 
 app.whenReady().then(() => {
   registerIpcHandlers();
 
-  // 剪贴板仓：启动后台采集（自动全收）；变化时通知渲染层
-  clipWatch.start(() => {
+  // 剪贴板仓：启动后台采集（自动全收）；变化时把“新条目 + 被淘汰条目”推给渲染层增量刷新
+  clipWatch.start((r) => {
     const mw = getMainWindow();
-    if (mw && !mw.isDestroyed()) mw.webContents.send('clip:changed');
+    if (mw && !mw.isDestroyed()) {
+      mw.webContents.send('clip:changed', r ? {
+        added: r.added ? clipWatch.formatItem(r.added) : null,
+        evicted: r.evicted || [],
+      } : null);
+    }
   });
   // 跟踪“上一个前台窗口”（拖出回退粘贴用）
   fgTrack.start(() => getMainWindow());
 
   const win = createMainWindow();
+
+  // 钉住预览窗层级压过主仓：同层级 alwaysOnTop 窗口按激活顺序排 z，
+  // 主仓被点活时会把重叠的钉住窗盖住——主仓一获得焦点就把钉住窗重新置顶
+  win.on('focus', () => {
+    preview.raisePins();
+  });
+
+  // —— 热键轮询：悬浮预览的 Ctrl 触发 / L 钉住原先依赖文件仓持有键盘焦点，
+  // 而焦点在启动（setSkipTaskbar 会隐藏再重显窗口）等时机并不可靠，导致
+  // “按 Ctrl 没反应、Lock 之后失灵”。改用原生 GetAsyncKeyState 轮询：
+  // 无论焦点在哪，按下 Ctrl / L 都作用到光标下的预览（主窗口可见时）。
+  // 无原生模块时由渲染层页面 keydown 兜底（需焦点）。
+  let prevCtrlDown = false;
+  let prevLDown = false;
+  let hotkeyTimer = null;
+  if (nd.available()) {
+    hotkeyTimer = setInterval(() => {
+      const mw = getMainWindow();
+      if (!mw || mw.isDestroyed() || !mw.isVisible()) return;
+      const ctrl = nd.keyDown(0x11); // VK_CONTROL
+      const l = nd.keyDown(0x4C);    // 'L'
+      if (ctrl && !prevCtrlDown) mw.webContents.send('hotkey:ctrl');
+      if (!ctrl && prevCtrlDown) mw.webContents.send('hotkey:ctrl-up'); // 松开沿：收起悬浮
+      if (l && !prevLDown) mw.webContents.send('hotkey:l');
+      prevCtrlDown = ctrl;
+      prevLDown = l;
+    }, 60);
+  }
 
   // 错误诊断日志（%TEMP%\filedock.log）：渲染层 error / 崩溃 / 拖拽会话异常
   const log = (msg) => {
@@ -128,15 +163,30 @@ app.whenReady().then(() => {
   });
 
   // 保存窗口位置 + 吸附检测
+  // 拖动窗口时 move 事件每移动一像素就触发一次，而 electron-store 每次 set 都会把
+  // 整份配置序列化后同步写盘。逐次落盘会让主进程在拖动全程持续阻塞，所以位置改成
+  // 延迟合并保存，并在窗口关闭 / 应用退出前补一次，避免丢掉最后一次位置。
   let moveEndTimer = null;
-  win.on('resize', () => {
-    const bounds = win.getBounds();
-    store.updateWindowState({ bounds });
-  });
+  let persistBoundsTimer = null;
+  let pendingBounds = null;
 
+  flushPendingBounds = () => {
+    clearTimeout(persistBoundsTimer);
+    persistBoundsTimer = null;
+    if (!pendingBounds) return;
+    store.updateWindowState({ bounds: pendingBounds });
+    pendingBounds = null;
+  };
+
+  const schedulePersistBounds = () => {
+    pendingBounds = win.getBounds();
+    clearTimeout(persistBoundsTimer);
+    persistBoundsTimer = setTimeout(flushPendingBounds, 400);
+  };
+
+  win.on('resize', schedulePersistBounds);
   win.on('move', () => {
-    const bounds = win.getBounds();
-    store.updateWindowState({ bounds });
+    schedulePersistBounds();
     // 移动时取消已展开的吸附状态
     snapManager.handleWindowMove();
     // 移动结束后检测吸附
@@ -145,6 +195,8 @@ app.whenReady().then(() => {
       snapManager.handleWindowMoved();
     }, 300);
   });
+
+  win.on('close', () => flushPendingBounds());
 });
 
 app.on('window-all-closed', () => {
@@ -165,8 +217,8 @@ app.on('activate', () => {
 
 app.on('before-quit', () => {
   isQuitting = true;
+  if (flushPendingBounds) flushPendingBounds();
   clipWatch.stop();
-  dnd.stop();
   fgTrack.stop();
   destroyTray();
 });

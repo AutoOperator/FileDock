@@ -119,7 +119,16 @@ function applyAlwaysOnTop(onTop) {
 // currentBounds: 当前窗口位置 {x, y, width, height}，用于让触点跟随窗口位置（偏中上）
 function getTriggerBounds(edge, sizeName, currentBounds) {
   const size = TRIGGER_SIZES[sizeName] || TRIGGER_SIZES.medium;
-  const display = screen.getPrimaryDisplay();
+  // 多显示器：按窗口当前所在显示器取工作区。此前固定用主屏，
+  // 副屏吸附时触点/展开位置会被算到主屏边缘。
+  const refRect = (currentBounds && currentBounds.width)
+    ? currentBounds
+    : {
+      x: currentBounds ? currentBounds.x : 0,
+      y: currentBounds ? currentBounds.y : 0,
+      width: size.length, height: size.length,
+    };
+  const display = screen.getDisplayMatching(refRect);
   const { width: sw, height: sh } = display.workAreaSize;
   const { x: wx, y: wy } = display.workArea;
 
@@ -156,11 +165,19 @@ function getTriggerBounds(edge, sizeName, currentBounds) {
 // 根据吸附边计算主窗口展开后的位置
 // currentBounds: 当前窗口位置 {x, y}，用于保持非吸附方向的当前位置
 function getExpandedBounds(edge, windowSize, currentBounds) {
-  const display = screen.getPrimaryDisplay();
-  const { width: sw, height: sh } = display.workAreaSize;
-  const { x: wx, y: wy } = display.workArea;
   const w = windowSize.width || 320;
   const h = windowSize.height || 480;
+  // 多显示器：按窗口当前所在显示器取工作区（同 getTriggerBounds）
+  const refRect = (currentBounds && currentBounds.width)
+    ? currentBounds
+    : {
+      x: currentBounds ? currentBounds.x : 0,
+      y: currentBounds ? currentBounds.y : 0,
+      width: w, height: h,
+    };
+  const display = screen.getDisplayMatching(refRect);
+  const { width: sw, height: sh } = display.workAreaSize;
+  const { x: wx, y: wy } = display.workArea;
 
   // 默认使用居中位置作为非吸附方向的初始值
   let keepX = wx + (sw - w) / 2;
