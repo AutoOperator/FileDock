@@ -103,6 +103,12 @@
       <div id="breadcrumb-path"></div>
     </div>
 
+    <!-- 编辑模式搜索条 -->
+    <div id="search-bar" class="search-bar">
+      <input id="search-input" type="text" placeholder="搜索文件名…" spellcheck="false">
+      <button id="search-scope-btn" class="icon-btn" title="当前：仅当前目录（点击改为含所有子目录）"></button>
+    </div>
+
     <!-- 文件区域 -->
     <div id="file-area" class="view-list">
       <div id="file-list" class="file-container">
@@ -217,6 +223,7 @@
         <button class="filter-mode-btn active" data-filtermode="type">按类型</button>
         <button class="filter-mode-btn" data-filtermode="ext">按后缀名</button>
       </div>
+      <div id="filter-toggle-all" class="filter-toggle-all">全不选</div>
       <div class="filter-body" id="filter-body"></div>
     </div>
 
@@ -227,6 +234,8 @@
     <div id="context-menu" class="context-menu hidden">
       <div class="menu-item" data-action="open">打开</div>
       <div class="menu-item" data-action="openFolder">在文件夹中显示</div>
+      <div class="menu-item" data-action="copyPath">复制路径</div>
+      <div class="menu-separator"></div>
       <div class="menu-item rename-menu-item hidden" data-action="rename">重命名</div>
       <div class="menu-separator"></div>
       <div class="menu-item" data-action="remove">从列表移除</div>
@@ -380,6 +389,53 @@
           <div class="setting-tip">
             勾选：拖出后引用从仓中消失（默认）。<br>
             取消勾选：拖出后引用仍保留在仓中（仅复制到目标位置）。
+          </div>
+        </div>
+
+        <!-- 图片预览 -->
+        <div class="settings-section">
+          <label class="section-title">图片预览</label>
+          <div class="setting-row">
+            <span>预览触发方式</span>
+            <select id="setting-previewTrigger">
+              <option value="ctrl">Ctrl + 悬停</option>
+              <option value="hover">悬停即显</option>
+            </select>
+          </div>
+          <div class="setting-tip">
+            在网格/列表中把鼠标停在图片或视频上，会即时弹出大图（视频播放片段）。默认按住 <kbd>Ctrl</kbd> 悬停触发；选“悬停即显”则鼠标停住即弹，无需按键。
+          </div>
+          <div class="setting-row">
+            <span>钉住图片下方显示文件名</span>
+            <input type="checkbox" id="setting-pinShowName">
+          </div>
+          <div class="setting-tip">
+            开启后，钉住的小窗（含图片组当前显示的这张）下方会以黑底白字显示文件名，与图片下边拼接。
+          </div>
+        </div>
+
+        <!-- 快捷方式 -->
+        <div class="settings-section">
+          <div class="section-title-row">
+            <label class="section-title">快捷方式</label>
+            <button class="text-btn" id="hotkey-reset-all">一键重置</button>
+          </div>
+          <div class="setting-row">
+            <span>切换仓库（按住侧键滚动）</span>
+            <select id="setting-hk-gesture">
+              <option value="xbutton2+wheel">侧键2 + 滚轮</option>
+              <option value="xbutton1+wheel">侧键1 + 滚轮</option>
+              <option value="none">关闭</option>
+            </select>
+            <button class="text-btn hotkey-reset" data-hk="dockSwitchGesture">重置</button>
+          </div>
+          <div class="setting-row">
+            <span>钉住悬浮图（按键）</span>
+            <div id="setting-hk-pinkey" class="hotkey-box" title="点击后按下新组合键（Esc 取消）">L</div>
+            <button class="text-btn hotkey-reset" data-hk="pinKey">重置</button>
+          </div>
+          <div class="setting-tip">
+            切换仓库：按住鼠标侧键并滚动滚轮即可在多个仓之间切换。钉住悬浮图：悬浮预览出现时按下所选按键即可钉住，支持 Ctrl / Alt / Shift 组合键（Esc 取消录制）。每项右侧按钮可单独重置为默认。
           </div>
         </div>
 

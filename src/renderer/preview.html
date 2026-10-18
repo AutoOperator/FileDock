@@ -1,0 +1,208 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  /* 背景完全透明：预览窗与内容显示区一致，不套黑框 */
+  html, body {
+    margin: 0; height: 100%;
+    background: transparent;
+    overflow: hidden;
+    user-select: none; -webkit-user-select: none;
+  }
+  /* 内容绝对定位铺满、object-fit 保持比例；叠放在同一格内，
+     这样换内容时"新的先上屏、旧的再撤"不会出现空窗帧（闪一下） */
+  img, video {
+    position: absolute; left: 0; top: 0;
+    width: 100%; height: 100%;
+    object-fit: contain;
+    user-select: none; -webkit-user-select: none;
+  }
+
+  /* 钉住态：整窗可拖动（边缘留给系统等比拉伸）。
+     X 的显隐由主进程轮询光标位置驱动（x-show 类）——不能用 no-drag 热区做
+     :hover 检测：no-drag 区域不响应拖拽，曾经造成右上角一大块"拖不动"。 */
+  body.pin { -webkit-app-region: drag; }
+  #close { display: none; }
+  body.pin #close {
+    display: flex; position: fixed; top: 4px; right: 4px;
+    width: 26px; height: 26px; border-radius: 50%;
+    background: rgba(0, 0, 0, .55); color: #fff;
+    align-items: center; justify-content: center;
+    cursor: pointer; -webkit-app-region: no-drag; z-index: 10;
+    border: none; padding: 0;
+    opacity: 0; transition: opacity .12s;
+    user-select: none; -webkit-user-select: none;
+  }
+  body.pin.x-show #close, body.pin #close:hover { opacity: 1; }
+  body.pin #close:hover { background: rgba(220, 60, 60, .85); }
+
+  /* 图片组左右切换箭头（主进程轮询驱动 nav-l / nav-r；仅图组且多于一张时启用） */
+  #nav-prev, #nav-next {
+    display: none; position: fixed; top: 50%; transform: translateY(-50%);
+    width: 32px; height: 32px; border-radius: 50%;
+    background: rgba(0, 0, 0, .5); color: #fff;
+    align-items: center; justify-content: center;
+    cursor: pointer; -webkit-app-region: no-drag; z-index: 10;
+    border: none; padding: 0;
+    user-select: none; -webkit-user-select: none;
+  }
+  #nav-prev { left: 8px; }
+  #nav-next { right: 8px; }
+  body.pin.nav-l #nav-prev { display: flex; }
+  body.pin.nav-r #nav-next { display: flex; }
+  #nav-prev:hover, #nav-next:hover { background: rgba(60, 60, 64, .9); }
+
+  /* 下方文件名栏：黑底白字，与图片下边拼接，仅下方两角小圆角（设置项控制） */
+  #caption {
+    display: none; position: fixed; left: 0; right: 0; bottom: 0;
+    height: 24px; padding: 0 10px; box-sizing: border-box;
+    background: rgba(15, 15, 17, .88); color: #fff;
+    font: 12px/24px "Microsoft YaHei", sans-serif;
+    text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    border-radius: 0 0 8px 8px;
+    user-select: none; -webkit-user-select: none;
+  }
+  body.show-name #caption { display: block; }
+  body.show-name img, body.show-name video { height: calc(100% - 24px); }
+
+  /* 拉伸判定区悬停时的整圈外框（主进程轮询驱动 edge-show；离开后滞留 500ms）。
+     不声明 app-region，不参与拖拽区域计算，pointer-events 也关掉 */
+  #frame { display: none; }
+  body.pin.edge-show #frame {
+    display: block; position: fixed; inset: 0;
+    border: 1.5px solid rgba(255, 255, 255, .65);
+    box-shadow: 0 0 0 1px rgba(0, 0, 0, .35), inset 0 0 0 1px rgba(0, 0, 0, .35);
+    border-radius: 8px;
+    pointer-events: none; z-index: 5;
+  }
+</style>
+</head>
+<body>
+<div id="frame"></div>
+<div id="caption"></div>
+<button id="nav-prev" title="上一张">
+  <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M10 3 L5 8 L10 13" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
+</button>
+<button id="nav-next" title="下一张">
+  <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M6 3 L11 8 L6 13" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
+</button>
+<button id="close" title="关闭 (Esc)">
+  <svg viewBox="0 0 16 16" width="11" height="11" aria-hidden="true">
+    <path d="M4 4 L12 12 M12 4 L4 12" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" fill="none"/>
+  </svg>
+</button>
+<script>
+  // 主进程 preview.js 注入内容：window.__setSrc(kind, src) → 内容就绪时 resolve(true/false)
+  (function () {
+    var el = null;
+    // 图片组状态必须显式声明：__updateCaption 会读它们，而单图（不走 __setGroup）
+    // 读未声明的标识符会抛 ReferenceError —— 这正是"只有图片组能显示文件名、
+    // 单图不显示"的根因
+    var group = null;
+    var gIndex = 0;
+
+    window.__setSrc = function (kind, src) {
+      return new Promise(function (resolve) {
+        var done = false;
+        var finish = function (ok) {
+          if (done) return;
+          done = true;
+          if (ok) {
+            // 新的先上屏、旧的再撤（同一帧内）→ 任何时刻都有画面，不闪不空窗。
+            // 两者都是绝对定位铺满，叠加期间不会互相挤压布局。
+            document.body.appendChild(next);
+            if (el && el.parentNode) el.parentNode.removeChild(el);
+            el = next;
+          } else if (next.parentNode) {
+            next.parentNode.removeChild(next);
+          }
+          resolve(!!ok);
+        };
+        var next;
+        try {
+          if (kind === 'video') {
+            next = document.createElement('video');
+            next.src = src;
+            next.autoplay = true;
+            next.muted = true;      // 静音自动播放；悬浮预览无需出声
+            next.loop = true;
+            next.setAttribute('playsinline', '');
+          } else {
+            next = document.createElement('img');
+            next.src = src;
+            next.draggable = false;
+            next.alt = '';
+          }
+        } catch (e) { resolve(false); return; }
+
+        // 就绪等待：图片 load / 视频出首帧；超时按失败处理（保留旧内容，不出现空窗）
+        var timer = setTimeout(function () { finish(false); }, kind === 'video' ? 6000 : 4000);
+        var wrap = function (fn) {
+          return function (ok) { clearTimeout(timer); fn(ok); };
+        };
+        if (kind === 'video') {
+          next.addEventListener('loadeddata', wrap(function () { finish(true); }));
+          next.addEventListener('error', wrap(function () { finish(false); }));
+          if (next.readyState >= 2) { clearTimeout(timer); finish(true); }
+        } else {
+          if (next.complete && next.naturalWidth > 0) { clearTimeout(timer); finish(true); return; }
+          next.addEventListener('load', wrap(function () { finish(true); }));
+          next.addEventListener('error', wrap(function () { finish(false); }));
+        }
+      });
+    };
+
+    // 当前内容的真实像素尺寸（主进程用来把窗口贴合到内容上）
+    window.__mediaDims = function () {
+      if (!el) return null;
+      if (el.tagName === 'VIDEO') {
+        return el.videoWidth > 0 ? { w: el.videoWidth, h: el.videoHeight } : null;
+      }
+      return el.naturalWidth > 0 ? { w: el.naturalWidth, h: el.naturalHeight } : null;
+    };
+
+    window.__updateCaption = function () {
+      var bar = document.getElementById('caption');
+      if (!bar) return;
+      var t = window.__caption || '';
+      if (group && group[gIndex] && group[gIndex].name) t = group[gIndex].name;
+      bar.textContent = t;
+    };
+
+    // 图片组：左右箭头在组内切换；切换后置 __pendingResize，主进程轮询取新图
+    // 真实尺寸并贴合窗口
+    window.__setGroup = function (items, index) {
+      group = items || null;
+      gIndex = group ? Math.max(0, Math.min(index | 0, group.length - 1)) : 0;
+      window.__updateCaption();
+      var it = group && group[gIndex];
+      return it ? window.__setSrc(it.kind, it.src) : Promise.resolve(false);
+    };
+
+    function groupGo(dir) {
+      if (!group || group.length < 2) return;
+      gIndex = (gIndex + dir + group.length) % group.length;
+      window.__pendingResize = true;
+      window.__updateCaption();
+      var it = group[gIndex];
+      window.__setSrc(it.kind, it.src);
+    }
+    document.getElementById('nav-prev').addEventListener('click', function () { groupGo(-1); });
+    document.getElementById('nav-next').addEventListener('click', function () { groupGo(1); });
+    document.addEventListener('keydown', function (e) {
+      if (!document.body.classList.contains('pin') || !group || group.length < 2) return;
+      if (e.key === 'ArrowLeft') groupGo(-1);
+      if (e.key === 'ArrowRight') groupGo(1);
+    });
+
+    // 钉住态由主进程运行时加 body.pin 类切换（不重新加载页面 → Lock 不闪）。
+    // 关闭按钮/Esc 常驻绑定，未钉住时空按钮不显示，也不会被点到。
+    document.getElementById('close').addEventListener('click', function () { window.close(); });
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape' && document.body.classList.contains('pin')) window.close();
+    });
+  })();
+</script>
+</body>
+</html>
